@@ -100,38 +100,125 @@ fn parse_reply(buf: &[u8]) -> Option<Palette> {
     Some(Palette { fg: color("10")?, bg: color("11")? })
 }
 
-/// Recolour `img` if it looks like a plot on a white background and the
-/// terminal's colours are known; anything else comes back unchanged.
+/// Recolour `img` if it is a figure on white paper and the terminal's
+/// colours are known; anything else comes back unchanged.
 pub fn apply(img: DynamicImage) -> DynamicImage {
-    match palette() {
-        Some(p) if looks_like_plot(&img) => DynamicImage::ImageRgba8(recolor(img.into_rgba8(), p)),
-        _ => img,
-    }
+    let Some(p) = palette() else { return img };
+    let rgba = img.to_rgba8();
+    let keep = match kind(&rgba) {
+        Kind::Plot => None,
+        Kind::Framed => Some(pictures(&rgba)),
+        Kind::Other => return img,
+    };
+    DynamicImage::ImageRgba8(recolor(rgba, p, keep.as_deref()))
+}
+
+/// What an image is, for recolouring.
+#[derive(Debug, PartialEq)]
+enum Kind {
+    /// Mostly white paper: all of it is recoloured.
+    Plot,
+    /// Pictures in a white frame (`imshow`, cropped tight by the inline
+    /// backend): the frame and its labels are recoloured, the pictures keep
+    /// their colours (see `pictures`).
+    Framed,
+    Other,
+}
+
+fn is_white(p: &image::Rgba<u8>) -> bool {
+    p.0.iter().all(|&c| c >= 240)
 }
 
 /// Plots have large white areas and no transparency. Photos rarely have a
-/// third of their pixels near-white; a transparent figure was styled for
-/// dark backgrounds by its author already.
-fn looks_like_plot(img: &DynamicImage) -> bool {
-    let rgba = img.to_rgba8();
-    let n = rgba.pixels().len().max(1);
-    let (mut white, mut clear) = (0, 0);
-    for p in rgba.pixels() {
-        let [r, g, b, a] = p.0;
-        if a < 250 {
-            clear += 1;
-        } else if r >= 240 && g >= 240 && b >= 240 {
-            white += 1;
+/// third of their pixels near-white, or a white edge all around; a
+/// transparent figure was styled for dark backgrounds by its author already.
+fn kind(img: &RgbaImage) -> Kind {
+    let n = img.pixels().len().max(1);
+    let clear = img.pixels().filter(|p| p.0[3] < 250).count();
+    let white = img.pixels().filter(|p| is_white(p)).count();
+    if clear * 100 >= n {
+        return Kind::Other;
+    }
+    if white * 3 >= n {
+        return Kind::Plot;
+    }
+    let (w, h) = img.dimensions();
+    let rows = (0..w).flat_map(|x| [(x, 0), (x, h - 1)]);
+    let edge: Vec<bool> = rows
+        .chain((0..h).flat_map(|y| [(0, y), (w - 1, y)]))
+        .map(|(x, y)| is_white(img.get_pixel(x, y)))
+        .collect();
+    let white = edge.iter().filter(|&&e| e).count();
+    if white * 20 >= edge.len() * 19 { Kind::Framed } else { Kind::Other }
+}
+
+/// Every cell within `r` of a cell equal to `v`, along rows and then
+/// columns, becomes `v` (a square dilation of the `v` set).
+fn spread(mask: &mut [bool], w: usize, r: usize, v: bool) {
+    let h = mask.len() / w.max(1);
+    let mut line = |start: usize, stride: usize, len: usize| {
+        let at = |i: usize| start + i * stride;
+        let src: Vec<bool> = (0..len).map(|i| mask[at(i)]).collect();
+        for rev in [false, true] {
+            let mut seen = None; // the last `v` in this direction
+            for k in 0..len {
+                let i = if rev { len - 1 - k } else { k };
+                if src[i] == v {
+                    seen = Some(k);
+                }
+                if seen.is_some_and(|s| k - s <= r) {
+                    mask[at(i)] = v;
+                }
+            }
+        }
+    };
+    (0..h).for_each(|y| line(y * w, 1, w));
+    (0..w).for_each(|x| line(x, w, h));
+}
+
+/// The pixels of a framed figure that keep their colours: everything but
+/// the frame (white reachable from the edge) and what is as thin as its
+/// text, ticks and lines (a morphological opening removes those).
+fn pictures(img: &RgbaImage) -> Vec<bool> {
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let mut keep: Vec<bool> = vec![true; w * h];
+    let white: Vec<bool> = img.pixels().map(is_white).collect();
+    let mut todo: Vec<usize> = (0..w * h)
+        .filter(|i| i % w == 0 || i % w == w - 1 || i / w == 0 || i / w == h - 1)
+        .collect();
+    while let Some(i) = todo.pop() {
+        if white[i] && keep[i] {
+            keep[i] = false;
+            let (x, y) = (i % w, i / w);
+            todo.extend(
+                [
+                    (x > 0).then(|| i - 1),
+                    (x + 1 < w).then(|| i + 1),
+                    (y > 0).then(|| i - w),
+                    (y + 1 < h).then(|| i + w),
+                ]
+                .into_iter()
+                .flatten(),
+            );
         }
     }
-    clear * 100 < n && white * 3 >= n
+    // ponytail: "as thin as a label" is a fiftieth of the figure; markers or
+    // lines in the frame thicker than that come out two-toned
+    let r = (w.max(h) / 50).max(4);
+    spread(&mut keep, w, r, false);
+    spread(&mut keep, w, r, true);
+    keep
 }
 
 /// White → background, black → foreground, greys in between; a coloured
 /// pixel keeps its offset from its own grey, so hues survive (a blue line
-/// stays blue, just lighter on a dark terminal).
-fn recolor(mut img: RgbaImage, p: Palette) -> RgbaImage {
-    for px in img.pixels_mut() {
+/// stays blue, just lighter on a dark terminal). Pixels marked in `keep`
+/// stay as they are.
+fn recolor(mut img: RgbaImage, p: Palette, keep: Option<&[bool]>) -> RgbaImage {
+    for (i, px) in img.pixels_mut().enumerate() {
+        if keep.is_some_and(|k| k[i]) {
+            continue;
+        }
         let c = [px.0[0], px.0[1], px.0[2]].map(|v| v as f32 / 255.0);
         let y = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; // Rec. 709 luma
         let channels = px.0.iter_mut().zip(c).zip(p.bg.iter().zip(p.fg));
@@ -185,7 +272,7 @@ mod tests {
                 _ => [31, 119, 180, 255], // matplotlib's C0 blue
             })
         });
-        let out = recolor(img, OCEAN);
+        let out = recolor(img, OCEAN, None);
         assert_eq!(out.get_pixel(0, 0).0, [43, 48, 59, 255]);
         assert_eq!(out.get_pixel(1, 0).0, [192, 197, 206, 255]);
         let [r, g, b, _] = out.get_pixel(2, 0).0;
@@ -199,8 +286,28 @@ mod tests {
         });
         let photo = RgbaImage::from_pixel(10, 10, image::Rgba([120, 90, 60, 255]));
         let styled = RgbaImage::from_pixel(10, 10, image::Rgba([0, 0, 0, 0]));
-        assert!(looks_like_plot(&DynamicImage::ImageRgba8(plot)));
-        assert!(!looks_like_plot(&DynamicImage::ImageRgba8(photo)));
-        assert!(!looks_like_plot(&DynamicImage::ImageRgba8(styled)));
+        assert_eq!(kind(&plot), Kind::Plot);
+        assert_eq!(kind(&photo), Kind::Other);
+        assert_eq!(kind(&styled), Kind::Other);
+    }
+
+    #[test]
+    fn a_picture_in_a_white_frame_keeps_its_colours_while_the_frame_is_recoloured() {
+        // 100x100: a white frame with a black one-pixel label, around a 90x90 picture
+        let img = RgbaImage::from_fn(100, 100, |x, y| {
+            image::Rgba(match (x, y) {
+                (2, 2) => [0, 0, 0, 255],
+                (5..95, 5..95) => [68, 1, 84, 255], // viridis' dark end
+                _ => [255; 4],
+            })
+        });
+        assert_eq!(kind(&img), Kind::Framed);
+        let keep = pictures(&img);
+        let out = recolor(img, OCEAN, Some(&keep));
+        assert_eq!(out.get_pixel(0, 0).0, [43, 48, 59, 255], "frame: background");
+        assert_eq!(out.get_pixel(2, 2).0, [192, 197, 206, 255], "label: foreground");
+        for at in [(5, 5), (50, 50), (94, 94)] {
+            assert_eq!(out.get_pixel(at.0, at.1).0, [68, 1, 84, 255], "picture at {at:?}");
+        }
     }
 }

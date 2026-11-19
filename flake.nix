@@ -48,9 +48,8 @@
           packages = with pkgs; [
             rustc cargo nodejs_22 nushell
             sway wf-recorder grim ffmpeg kitty wlrctl neovim wtype
-            # the terminal gallery (scenes/terminals.nu); xterm needs Xwayland,
-            # gnome-terminal a session bus
-            foot alacritty wezterm ghostty tmux kdePackages.konsole gnome-terminal xterm xwayland dbus
+            # the terminal gallery (scenes/terminals.nu); xterm needs Xwayland
+            foot wezterm ghostty tmux xterm xwayland
             (python3.withPackages (p: with p; [ ipykernel numpy scipy matplotlib tqdm sympy ]))
           ];
           # software OpenGL from this Mesa for kitty, also where the host has

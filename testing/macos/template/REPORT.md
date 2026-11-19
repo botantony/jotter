@@ -13,7 +13,7 @@ Date:
 
 ## Steps
 
-Pass means it behaved as the playbook expected; a fallback the playbook called expected for your terminal, such as blocky images in Terminal.app, is a pass.
+Pass means it behaved as the playbook expected; that includes the error jOtter prints in a terminal the playbook lists as not supported.
 
 | Step | Result (pass / fail / skipped) | Notes |
 | --- | --- | --- |

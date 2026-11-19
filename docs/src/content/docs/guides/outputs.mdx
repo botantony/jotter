@@ -45,7 +45,7 @@ Clearing can be undone with <kbd>u</kbd>.
 
 PNG, JPEG, GIF and SVG outputs render inline. That covers matplotlib, seaborn, plotnine, PIL images and anything else that displays an image.
 
-In terminals with a graphics protocol the image is sharp; elsewhere it is drawn with half-block characters. See [Terminal setup](/jotter/getting-started/terminal-setup/).
+Images use the terminal's graphics protocol, which jOtter requires. See [Terminal setup](/jotter/getting-started/terminal-setup/).
 
 Images taller than 18 rows ([`max_image_rows`](/jotter/reference/configuration/#max_image_rows)) are scaled down once, with high-quality resampling.
 
@@ -55,7 +55,25 @@ Plotting libraries draw black on white, which is a glaring box on a dark termina
 
 This only changes what you see in jOtter. The notebook's saved outputs, files written with `savefig`, and what collaborators see in JupyterLab keep their original colours, and your plotting code needs no styling.
 
-jOtter recolours images that look like plots: a large white background and no transparency. Photos, and figures you've styled yourself with a transparent or dark background, are shown as they are. Heatmaps and colour maps inside a white figure are recoloured too, and with them their colour bars, so readings stay consistent, but the colours differ from the original. If you'd rather see every image exactly as the kernel sent it, turn this off:
+#### Which images are recoloured
+
+jOtter looks at each image and picks one of three treatments:
+
+| The image | What jOtter does |
+| --- | --- |
+| At least a third of it is white, and it has no transparency: an ordinary plot | Recolours the whole image |
+| Less white than that, but white all around the edge: a picture in a white frame, such as `imshow` with axes | Recolours the frame, its text and its ticks; the picture keeps its colours |
+| Anything else: photos, and figures you've styled yourself with a transparent or dark background | Shows it as it is |
+
+#### What recolouring does to a colour
+
+Recolouring swaps light and dark and keeps the hue. White becomes the terminal's background and black its foreground; a dark blue line becomes a light blue line, so it stays readable on a dark background.
+
+This has a side effect for plots that contain a picture and are mostly white, such as a heatmap with a colour bar or a grid of small images. The picture is recoloured with the rest: a colour map runs from light to dark instead of dark to light, and a grayscale image looks like a negative. The colour bar changes the same way, so readings stay correct.
+
+#### Switching it off
+
+To see every image exactly as the kernel sent it, set [`recolor_plots`](/jotter/reference/configuration/#recolor_plots) to `false` and restart jOtter:
 
 ```toml title="~/.config/jotter/config.toml"
 recolor_plots = false
