@@ -2,6 +2,25 @@
 
 Every release of jOtter. The same notes are on each [GitHub release](https://github.com/samox73/jotter/releases).
 
+## 0.7.0 (2026-11-19)
+
+### Features
+
+- Look for venv dir in parent dirs (#9) ([46caca8](https://github.com/samox73/jotter/commit/46caca885e5a362237ce8d15287cc7d22badf127))
+- Ask which kernel to start when the notebook's isn't installed (#10) ([9262301](https://github.com/samox73/jotter/commit/9262301947dfe7c1348d9d98b047060a213d99c3))
+- Split cells with ctrl+k; ctrl+\ is deprecated (#19) ([9780f6c](https://github.com/samox73/jotter/commit/9780f6cfee7eeb4cb68ce3e57f7af6a129aae35d))
+
+### Bug fixes
+
+- Make Julia, R and Rust notebooks usable (#11) ([ff79d1b](https://github.com/samox73/jotter/commit/ff79d1baa3aa297780346644eb9e646a52e244a1))
+- Polish Julia, R and Rust notebooks (#13) ([ca043bc](https://github.com/samox73/jotter/commit/ca043bc22837f19a7e3530a91a9bf27f3eaf4455))
+- Shift+Tab shows docs only while the completion popup is closed (#14) ([120bf23](https://github.com/samox73/jotter/commit/120bf234cf28f147673c89638b0d35653ce4378f))
+- Improve modal doc view (#16) ([a6ceba0](https://github.com/samox73/jotter/commit/a6ceba091c304f33ed6ff746041505a5763dedcc))
+
+### Documentation
+
+- Test harness and 0.6.0 test report for macOS (#8) ([1d71da1](https://github.com/samox73/jotter/commit/1d71da191d40e4fc54b830aebdd73c0814504aae))
+
 ## 0.6.0 (2026-11-10)
 
 ### Features
