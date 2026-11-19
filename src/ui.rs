@@ -2763,6 +2763,7 @@ fn help_split(sections: &[Vec<Line>]) -> usize {
 
 /// `?`: the key reference. Two columns where they fit, one once the filter
 /// leaves no more than a column's worth; scrolls when the screen is short.
+/// The panel keeps the size of the unfiltered help.
 fn draw_help(frame: &mut Frame, help: &mut crate::app::Help) {
     let area = frame.area();
     let rows = area.height.saturating_sub(2) as usize;
@@ -2789,8 +2790,11 @@ fn draw_help(frame: &mut Frame, help: &mut crate::app::Help) {
         let len = |c: &[Vec<Line>]| c.iter().map(Vec::len).sum::<usize>();
         len(l).max(len(r)).saturating_sub(1)
     };
-    let column = tall(&all, help_split(&all)).min(rows);
-    let two = area.width >= 2 * col_w + 4 + 4 && tall(&sections, sections.len()) > column;
+    // the panel is sized for the whole help, so it stays put while filtering
+    let fits_two = area.width >= 2 * col_w + 4 + 4;
+    let full_w = if fits_two { 2 * col_w + 4 } else { col_w };
+    let full_h = tall(&all, if fits_two { help_split(&all) } else { all.len() });
+    let two = fits_two && tall(&sections, sections.len()) > full_h.min(rows);
     let split = if two { help_split(&sections) } else { sections.len() };
     let height = tall(&sections, split);
     help.top = help.top.min(height.saturating_sub(rows));
@@ -2806,12 +2810,11 @@ fn draw_help(frame: &mut Frame, help: &mut crate::app::Help) {
     } else {
         "/ filters · any other key closes"
     };
-    let width = if two { 2 * col_w + 4 } else { col_w };
     // the frame's own labels must fit too
     let labels = Line::raw(title.as_str()).width().max(hint.chars().count()) as u16 + 2;
-    let panel = overlay_rect(area, width.max(labels) + 4, height.min(rows) as u16 + 2);
+    let panel = overlay_rect(area, full_w.max(labels) + 4, full_h.min(rows) as u16 + 2);
     let inner = modal(frame, panel, &title, hint);
-    let body = centered(inner, width, height as u16);
+    let body = centered(inner, full_w, full_h as u16);
     let (left, right) = sections.split_at(split);
     let shown = |col: &[Vec<Line<'static>>]| -> Vec<Line<'static>> {
         col.iter().flatten().skip(help.top).take(rows).cloned().collect()
@@ -2826,7 +2829,10 @@ fn draw_help(frame: &mut Frame, help: &mut crate::app::Help) {
         frame.render_widget(Paragraph::new(shown(left)), l);
         frame.render_widget(Paragraph::new(shown(right)), r);
     } else {
-        frame.render_widget(Paragraph::new(shown(left)), body);
+        frame.render_widget(
+            Paragraph::new(shown(left)),
+            Rect { width: col_w.min(body.width), ..body },
+        );
     }
 }
 
@@ -3406,10 +3412,8 @@ mod tests {
         let all = rows.join("\n");
         assert!(all.contains("Run") && all.contains("interrupt kernel"), "{all}");
         assert!(!all.contains("Navigate") && !all.contains("run in place"), "{all}");
-        assert!(
-            rows.iter().all(|r| r.chars().count() == 120 && !r.starts_with('╭')),
-            "small: {all}"
-        );
+        // the panel doesn't shrink with the matches
+        assert!(rows[0].starts_with('╭') && rows[44].starts_with('╰'), "{all}");
         assert!(help(120, 45, "no such key", 0).0.join("\n").contains("no match"));
         // a short screen scrolls: the end is reachable, `top` is clamped
         let (rows, top) = help(120, 20, "", usize::MAX);
