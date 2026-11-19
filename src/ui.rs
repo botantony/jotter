@@ -832,11 +832,8 @@ impl Rendered {
             (area.width as u32 * font.width as u32).max(1),
             (area.height as u32 * font.height as u32).max(1),
         );
-        let img = if img.width() > max_w || img.height() > max_h {
-            img.resize(max_w, max_h, image::imageops::FilterType::Lanczos3)
-        } else {
-            img
-        };
+        // fits the screen both ways: a small figure is enlarged
+        let img = img.resize(max_w, max_h, image::imageops::FilterType::Lanczos3);
         SlicedProtocol::new(picker, img, None).ok()
     }
 
