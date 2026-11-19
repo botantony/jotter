@@ -32,7 +32,7 @@ Kept up to date after the report; last change 2026-11-19. Commits are on the `ma
 | F-12 Recovery prompt overstates changed cells | Fixed | The prompt no longer counts cells: it only says how old the autosave is. |
 | F-13 Test notebook not in canonical nbformat | Fixed | #8. |
 | F-14 Playbook statements that no longer match | Fixed | #8. |
-| F-15 Plot keeps a white frame on dark themes | In progress | Frame-only recolouring for pictures in a white frame; in review. |
+| F-15 Plot keeps a white frame on dark themes | Fixed | A picture in a white frame keeps its colours and only the frame is recoloured. Mostly white figures are still recoloured whole; the outputs guide explains this and the opt-out. |
 | F-16 Long outputs scroll one line per press | Open | Half-page scrolling was rejected. The help overlay got scrolling and a filter (`482c57c`); a viewer for long outputs is undecided. |
 
 ---

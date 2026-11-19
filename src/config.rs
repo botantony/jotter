@@ -60,7 +60,8 @@ pub struct Config {
     /// background and black text and axes become the terminal foreground, while coloured lines
     /// keep their hue. Only the display changes; the notebook, its saved outputs and files written
     /// with `savefig` keep their original colours. It applies to images with a large white
-    /// background and no transparency, so photos and figures you styled yourself are left alone.
+    /// background and no transparency, and to the white frame around a picture, so photos and
+    /// figures you styled yourself are left alone.
     /// See [outputs](/jotter/guides/outputs/#plots-in-your-terminals-colours).
     pub recolor_plots: bool,
     /// The command that formats a code cell with `f` (or every code cell with `F`). It gets the
