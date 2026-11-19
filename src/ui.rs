@@ -34,6 +34,8 @@ use crate::{
 
 const OUTPUT_STYLE: Style = Style::new().fg(Color::Gray);
 const ERROR_STYLE: Style = Style::new().fg(Color::Red);
+/// stderr: told apart from stdout, quieter than a traceback.
+const STDERR_STYLE: Style = Style::new().fg(Color::Red).add_modifier(Modifier::DIM);
 
 /// Images taller than this many rows are downscaled once (config knob).
 fn max_image_rows() -> u16 {
@@ -1395,7 +1397,10 @@ fn render_table(rows: &[String]) -> Vec<Line<'static>> {
 
 fn output_lines(output: &Value) -> Vec<Line<'static>> {
     let (text, style) = match output["output_type"].as_str() {
-        Some("stream") => (join_multiline(&output["text"]), OUTPUT_STYLE),
+        Some("stream") => (
+            join_multiline(&output["text"]),
+            if output["name"] == "stderr" { STDERR_STYLE } else { OUTPUT_STYLE },
+        ),
         Some("execute_result") | Some("display_data") => {
             let data = &output["data"];
             let plain = join_multiline(&data["text/plain"]);
@@ -2795,6 +2800,16 @@ mod tests {
             out.contains("\x1bPtmux;\x1b\x1b_Ga=d,d=I,i=7000002,q=2\x1b\x1b\\\x1b\\"),
             "{out:?}"
         );
+    }
+
+    #[test]
+    fn stderr_is_styled_apart_from_stdout() {
+        let style = |name| {
+            let out = serde_json::json!({"output_type": "stream", "name": name, "text": "x\n"});
+            output_lines(&out)[0].style
+        };
+        assert_eq!(style("stdout"), OUTPUT_STYLE);
+        assert_eq!(style("stderr"), STDERR_STYLE);
     }
 
     /// IPython < 9.14 highlights the error range as syntax colours on yellow.
