@@ -12,6 +12,31 @@
 
 ---
 
+## Status of the findings
+
+Kept up to date after the report; last change 2026-11-19. Commits are on the `macos-fixes` branch. "Fixed" means fixed on Linux and still to be confirmed on a Mac by the tester.
+
+| Finding | Status | Decision or change |
+| --- | --- | --- |
+| F-01 Gatekeeper's default button deletes the binary | Open | Install docs; written once the fixes below are confirmed. |
+| F-02 Kernel hangs on a privacy dialog for notebooks in iCloud Drive | Open | Needs a Mac to reproduce. |
+| F-03 Math is unreadable in half-block terminals | Closed, won't fix | Terminals without an image protocol are no longer supported (decided 2026-11-19): jOtter exits with an error there (`b6a17cc`). |
+| F-04 Ctrl+Enter never reaches jOtter in Terminal.app | Closed, won't fix | Terminal.app is not supported, see F-03. |
+| F-05 `yy` reports success without a clipboard in Terminal.app | Closed, won't fix | Terminal.app is not supported, see F-03. |
+| F-06 `zi` never enlarges; plots are half-size on Retina | Partly fixed | `zi` enlarges small figures (`337a61f`). The Retina DPI part is open and needs a Mac. |
+| F-07 Ctrl+\ on German/Austrian layouts inserts a `7` | Fixed in 0.7.0 | Ctrl+k splits the cell; Ctrl chords insert nothing (#19). |
+| F-08 Torn frames while scrolling in Terminal.app | Closed, won't fix | Terminal.app is not supported, see F-03. |
+| F-09 stderr looks the same as stdout | Fixed | stderr is dim red (`489398f`). |
+| F-10 Transparent image areas render dark in half-blocks | Closed, won't fix | See F-03. |
+| F-11 Shell completions list the hidden `--generate` | Fixed | `340c8c0`. |
+| F-12 Recovery prompt overstates changed cells | Open | Under discussion. |
+| F-13 Test notebook not in canonical nbformat | Fixed | #8. |
+| F-14 Playbook statements that no longer match | Fixed | #8. |
+| F-15 Plot keeps a white frame on dark themes | In progress | Frame-only recolouring for pictures in a white frame; in review. |
+| F-16 Long outputs scroll one line per press | Open | Half-page scrolling was rejected. The help overlay got scrolling and a filter (`482c57c`); a viewer for long outputs is undecided. |
+
+---
+
 ## 1. Executive summary
 
 **jOtter 0.6.0 works on Apple Silicon running macOS 26.** In kitty and Ghostty every playbook check passed: plots and math are sharp, Shift+Enter and Ctrl+Enter work, `yy` reaches the macOS clipboard, and resizing, fullscreen and fast scrolling are clean. Kernel discovery from a `.venv` next to the notebook worked without activating anything. Saving handles spaces, accented names (NFC and NFD) and case-folding correctly.
