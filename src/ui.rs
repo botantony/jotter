@@ -1976,8 +1976,8 @@ pub fn draw(frame: &mut Frame, app: &mut App, rendered: &mut Rendered) {
         };
         draw_signature(frame, sig, at, back, completion_below, body, &rendered.panel());
     }
-    if app.show_help {
-        draw_help(frame);
+    if let Some(help) = &mut app.help {
+        draw_help(frame, help);
     }
     if let Some(up) = &mut app.logs {
         draw_logs(frame, up);
@@ -2186,6 +2186,13 @@ fn centered(outer: Rect, w: u16, h: u16) -> Rect {
     }
 }
 
+/// Where an overlay goes: `w`x`h` centered, or the whole screen once it
+/// would cover 70% of the width or the height anyway.
+fn overlay_rect(outer: Rect, w: u16, h: u16) -> Rect {
+    let most = |part: u16, whole: u16| part as u32 * 10 >= whole as u32 * 7;
+    if most(w, outer.width) || most(h, outer.height) { outer } else { centered(outer, w, h) }
+}
+
 /// The notebook's kernel isn't installed: a filter field over the ones that
 /// are (`App::on_key_kernel_pick` takes the keys).
 fn draw_kernels(frame: &mut Frame, pick: &crate::app::KernelPick) {
@@ -2234,8 +2241,11 @@ fn draw_stdin(frame: &mut Frame, req: &crate::app::StdinReq) {
 /// dependencies), newest at the bottom. `up` = rows scrolled up; clamped here.
 fn draw_logs(frame: &mut Frame, up: &mut usize) {
     let area = frame.area();
-    let panel =
-        centered(area, area.width.saturating_sub(4).clamp(40, 140), area.height.saturating_sub(2));
+    let panel = overlay_rect(
+        area,
+        area.width.saturating_sub(4).clamp(40, 140),
+        area.height.saturating_sub(2),
+    );
     let rows = panel.height.saturating_sub(2) as usize;
     let lines: Vec<Line> = crate::log::with_entries(|entries| {
         *up = (*up).min(entries.len().saturating_sub(rows));
@@ -2559,7 +2569,7 @@ fn docs_layout(text: Text<'static>) -> Text<'static> {
 }
 
 /// Shift+Tab docs: scrollable text (see `docs_layout`), wrapped, in a panel
-/// only as large as its content (at most the screen); `top` clamped here.
+/// only as large as its content (see `overlay_rect`); `top` clamped here.
 fn draw_pager(frame: &mut Frame, pager: &mut crate::app::Pager) {
     const SCROLL_HINT: &str = "j/k PgUp/PgDn g/G scroll · any other key closes";
     let area = frame.area();
@@ -2568,7 +2578,7 @@ fn draw_pager(frame: &mut Frame, pager: &mut crate::app::Pager) {
     let text = pager.text.into_text().unwrap_or_else(|_| Text::raw(pager.text.clone()));
     let lines = wrap_lines(&docs_layout(text).lines, max as u16).rows;
     let total = lines.len();
-    let rows = total.min(area.height.saturating_sub(4) as usize);
+    let rows = total.min(area.height.saturating_sub(2) as usize);
     pager.top = pager.top.min(total - rows);
     let (title, hint) = if total > rows {
         let (from, to) = (pager.top + 1, pager.top + rows);
@@ -2579,7 +2589,7 @@ fn draw_pager(frame: &mut Frame, pager: &mut crate::app::Pager) {
     // the frame's own labels must fit too
     let content = lines.iter().map(Line::width).max().unwrap_or(0);
     let labels = title.chars().count().max(hint.chars().count());
-    let panel = centered(area, (content.max(labels).min(max) + 4) as u16, rows as u16 + 2);
+    let panel = overlay_rect(area, (content.max(labels).min(max) + 4) as u16, rows as u16 + 2);
     let inner = modal(frame, panel, &title, hint);
     let lines: Vec<Line> = lines.into_iter().skip(pager.top).take(rows).collect();
     frame.render_widget(Paragraph::new(lines), inner);
@@ -2598,7 +2608,7 @@ fn draw_debug(frame: &mut Frame, text: &str) {
         })
         .collect();
     let width = lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 4;
-    let panel = centered(frame.area(), width.max(40), lines.len() as u16 + 2);
+    let panel = overlay_rect(frame.area(), width.max(40), lines.len() as u16 + 2);
     let inner = modal(frame, panel, "debug · copied to clipboard", "any key closes");
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -2685,7 +2695,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             (":", "command line (see Commands)"),
             ("L", "view logs"),
             ("D", "debug info for this cell"),
-            ("?", "this help"),
+            ("?", "this help (/ filters it)"),
         ],
     ),
     (
@@ -2737,42 +2747,86 @@ fn help_section(title: &str, rows: &[(&str, &str)]) -> Vec<Line<'static>> {
     lines
 }
 
-fn draw_help(frame: &mut Frame) {
-    let sections: Vec<Vec<Line>> = HELP.iter().map(|(t, r)| help_section(t, r)).collect();
-    let col_w = sections.iter().flatten().map(Line::width).max().unwrap_or(0) as u16;
-    let area = frame.area();
-    // two columns when they fit: split where the halves balance by height
-    let two = area.width >= 2 * col_w + 4 + 4;
+/// Index of the first section of the right column: where the two halves
+/// balance by height.
+fn help_split(sections: &[Vec<Line>]) -> usize {
     let total: usize = sections.iter().map(Vec::len).sum();
-    let mut split = sections.len();
-    if two {
-        let mut acc = 0;
-        for (i, s) in sections.iter().enumerate() {
-            if acc + s.len() / 2 >= total / 2 {
-                split = i;
-                break;
-            }
-            acc += s.len();
+    let mut acc = 0;
+    for (i, s) in sections.iter().enumerate() {
+        if acc + s.len() / 2 >= total / 2 {
+            return i;
         }
+        acc += s.len();
     }
-    let (left, right) = sections.split_at(split);
-    let left: Vec<Line> = left.iter().flatten().cloned().collect();
-    let right: Vec<Line> = right.iter().flatten().cloned().collect();
-    let height = left.len().max(right.len()).saturating_sub(1) as u16; // drop trailing blank
+    sections.len()
+}
+
+/// `?`: the key reference. Two columns where they fit, one once the filter
+/// leaves no more than a column's worth; scrolls when the screen is short.
+fn draw_help(frame: &mut Frame, help: &mut crate::app::Help) {
+    let area = frame.area();
+    let rows = area.height.saturating_sub(2) as usize;
+    let needle = help.filter.to_lowercase();
+    let all: Vec<Vec<Line>> = HELP.iter().map(|(t, r)| help_section(t, r)).collect();
+    // sections keep their heading, entries that don't match go
+    let mut sections: Vec<Vec<Line>> = HELP
+        .iter()
+        .filter_map(|(title, entries)| {
+            let hit = |s: &str| s.to_lowercase().contains(&needle);
+            let entries: Vec<_> =
+                entries.iter().copied().filter(|(k, w)| hit(k) || hit(w)).collect();
+            (!entries.is_empty()).then(|| help_section(title, &entries))
+        })
+        .collect();
+    if sections.is_empty() {
+        sections
+            .push(vec![Line::styled("no match", Style::new().fg(Color::DarkGray)), Line::raw("")]);
+    }
+    let col_w = all.iter().flatten().map(Line::width).max().unwrap_or(0) as u16;
+    // height of the columns when `s` is split at `at` (less the trailing blank)
+    let tall = |s: &[Vec<Line>], at: usize| {
+        let (l, r) = s.split_at(at);
+        let len = |c: &[Vec<Line>]| c.iter().map(Vec::len).sum::<usize>();
+        len(l).max(len(r)).saturating_sub(1)
+    };
+    let column = tall(&all, help_split(&all)).min(rows);
+    let two = area.width >= 2 * col_w + 4 + 4 && tall(&sections, sections.len()) > column;
+    let split = if two { help_split(&sections) } else { sections.len() };
+    let height = tall(&sections, split);
+    help.top = help.top.min(height.saturating_sub(rows));
+    let title = match (help.typing, help.filter.is_empty()) {
+        (true, _) => format!("jOtter 🦦 keys · /{}▏", help.filter),
+        (false, false) => format!("jOtter 🦦 keys · /{}", help.filter),
+        (false, true) => "jOtter 🦦 keys".to_string(),
+    };
+    let hint = if help.typing {
+        "Enter keeps · Esc clears"
+    } else if height > rows {
+        "j/k PgUp/PgDn g/G scroll · / filters · any other key closes"
+    } else {
+        "/ filters · any other key closes"
+    };
     let width = if two { 2 * col_w + 4 } else { col_w };
-    let inner =
-        modal(frame, centered(area, width + 4, height + 2), "jOtter 🦦 keys", "any key closes");
+    // the frame's own labels must fit too
+    let labels = Line::raw(title.as_str()).width().max(hint.chars().count()) as u16 + 2;
+    let panel = overlay_rect(area, width.max(labels) + 4, height.min(rows) as u16 + 2);
+    let inner = modal(frame, panel, &title, hint);
+    let body = centered(inner, width, height as u16);
+    let (left, right) = sections.split_at(split);
+    let shown = |col: &[Vec<Line<'static>>]| -> Vec<Line<'static>> {
+        col.iter().flatten().skip(help.top).take(rows).cloned().collect()
+    };
     if two {
         let [l, _, r] = Layout::horizontal([
             Constraint::Length(col_w),
             Constraint::Length(4),
             Constraint::Length(col_w),
         ])
-        .areas(inner);
-        frame.render_widget(Paragraph::new(left), l);
-        frame.render_widget(Paragraph::new(right), r);
+        .areas(body);
+        frame.render_widget(Paragraph::new(shown(left)), l);
+        frame.render_widget(Paragraph::new(shown(right)), r);
     } else {
-        frame.render_widget(Paragraph::new(left), inner);
+        frame.render_widget(Paragraph::new(shown(left)), body);
     }
 }
 
@@ -3265,9 +3319,10 @@ mod tests {
         // more lines than fit: full height, scroll hint, `top` clamped
         let long = (0..30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let (rows, top) = draw(&long, usize::MAX);
-        assert_eq!(top, 30 - 8);
-        assert!(rows[1].contains("23–30 of 30") && rows[9].contains("line 29"));
-        assert!(rows[10].contains("scroll"), "{}", rows.join("\n"));
+        // (and the whole screen: it would cover over 70% of it anyway)
+        assert_eq!(top, 30 - 10);
+        assert!(rows[0].contains("21–30 of 30") && rows[10].contains("line 29"));
+        assert!(rows[11].contains("scroll"), "{}", rows.join("\n"));
         // a line wider than the screen wraps instead of losing its end
         let (rows, _) = draw(&format!("/nix/store/{}/numpy/__init__.py", "x".repeat(90)), 0);
         assert!(rows.join("\n").contains("__init__.py"), "{}", rows.join("\n"));
@@ -3310,7 +3365,16 @@ mod tests {
             t.draw(|fr| f(fr)).unwrap();
             buffer_rows(&t)
         };
-        let rows = render(120, 45, &|f| draw_help(f));
+        let help = |w, h, filter: &str, top| {
+            let state = std::cell::RefCell::new(crate::app::Help {
+                filter: filter.into(),
+                typing: false,
+                top,
+            });
+            let rows = render(w, h, &|f| draw_help(f, &mut state.borrow_mut()));
+            (rows, state.into_inner().top)
+        };
+        let (rows, _) = help(120, 45, "", 0);
         let all = rows.join("\n");
         if std::env::var_os("JOTTER_SHOW").is_some() {
             println!("{all}");
@@ -3335,6 +3399,23 @@ mod tests {
             let after = r.split('│').nth(1).unwrap_or("");
             assert!(after.starts_with(' '), "unpadded row: {r:?}");
         }
+        // over 70% of the height: the whole screen
+        assert!(rows[0].starts_with('╭') && rows[44].starts_with('╰'), "{all}");
+        // a filter keeps the headings of what matches and fits one column
+        let (rows, _) = help(120, 45, "KERNEL", 0);
+        let all = rows.join("\n");
+        assert!(all.contains("Run") && all.contains("interrupt kernel"), "{all}");
+        assert!(!all.contains("Navigate") && !all.contains("run in place"), "{all}");
+        assert!(
+            rows.iter().all(|r| r.chars().count() == 120 && !r.starts_with('╭')),
+            "small: {all}"
+        );
+        assert!(help(120, 45, "no such key", 0).0.join("\n").contains("no match"));
+        // a short screen scrolls: the end is reachable, `top` is clamped
+        let (rows, top) = help(120, 20, "", usize::MAX);
+        let all = rows.join("\n");
+        assert!(top > 0 && all.contains("Shift+drag") && all.contains("scroll"), "{all}");
+        assert!(!all.contains("Navigate"), "{all}");
     }
 
     #[test]

@@ -128,6 +128,17 @@ pub struct Pager {
     pub top: usize,
 }
 
+/// `?`: the key reference, scrollable and filterable.
+#[derive(Default)]
+pub struct Help {
+    /// Entries must contain this (case-insensitive); empty shows all.
+    pub filter: String,
+    /// `/` was pressed: keys edit the filter.
+    pub typing: bool,
+    /// First visible row; clamped by the draw.
+    pub top: usize,
+}
+
 /// (row, col) in chars -> char offset into `source` (rows split on '\n').
 pub fn char_offset(source: &str, (row, col): (usize, usize)) -> usize {
     let mut off = 0;
@@ -188,7 +199,7 @@ pub struct App {
     /// `zz`/`zt`/`zb`: where the next draw puts the selected cell.
     pub align: Option<Align>,
     /// Keybinding cheatsheet overlay is open.
-    pub show_help: bool,
+    pub help: Option<Help>,
     /// Total rendered lines of the last draw (scroll bound).
     pub content_lines: usize,
     last_click: Option<(Instant, u16, u16)>,
@@ -378,7 +389,7 @@ impl App {
             body: Rect::default(),
             manual_scroll: false,
             align: None,
-            show_help: false,
+            help: None,
             content_lines: 0,
             last_click: None,
             confirm: None,
@@ -660,7 +671,15 @@ impl App {
             }
             return;
         }
-        if self.zoom.is_some() || self.show_help || self.debug.is_some() || self.confirm.is_some() {
+        if let Some(h) = &mut self.help {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => h.top = h.top.saturating_sub(3),
+                MouseEventKind::ScrollDown => h.top += 3,
+                _ => {}
+            }
+            return;
+        }
+        if self.zoom.is_some() || self.debug.is_some() || self.confirm.is_some() {
             return; // overlay/question owns the screen; keys close it
         }
         if matches!(
@@ -844,8 +863,36 @@ impl App {
             }
             return Action::None;
         }
-        if self.show_help || self.debug.is_some() || self.zoom.is_some() {
-            self.show_help = false;
+        if let Some(help) = &mut self.help {
+            let page = (self.body.height as usize / 2).max(1);
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            match key.code {
+                // `/`: type a filter; Enter keeps it, Esc drops it
+                KeyCode::Enter if help.typing => help.typing = false,
+                KeyCode::Esc if help.typing || !help.filter.is_empty() => {
+                    *help = Help::default();
+                }
+                KeyCode::Backspace if help.typing => {
+                    help.filter.pop();
+                }
+                KeyCode::Char(c) if help.typing && !ctrl => {
+                    help.filter.push(c);
+                    help.top = 0;
+                }
+                KeyCode::Char('/') => help.typing = true,
+                KeyCode::Char('j') | KeyCode::Down => help.top += 1,
+                KeyCode::Char('k') | KeyCode::Up => help.top = help.top.saturating_sub(1),
+                KeyCode::Char('d') if ctrl => help.top += page,
+                KeyCode::Char('u') if ctrl => help.top = help.top.saturating_sub(page),
+                KeyCode::PageDown | KeyCode::Char(' ') => help.top += page,
+                KeyCode::PageUp => help.top = help.top.saturating_sub(page),
+                KeyCode::Char('g') | KeyCode::Home => help.top = 0,
+                KeyCode::Char('G') | KeyCode::End => help.top = usize::MAX,
+                _ => self.help = None,
+            }
+            return Action::None;
+        }
+        if self.debug.is_some() || self.zoom.is_some() {
             self.debug = None;
             self.zoom = None;
             return Action::None;
@@ -1613,7 +1660,7 @@ impl App {
                     self.restart_kernel(false)
                 }
                 KeyCode::Char('R') => self.confirm = Some(Confirm::Restart),
-                KeyCode::Char('?') => self.show_help = true,
+                KeyCode::Char('?') => self.help = Some(Help::default()),
                 KeyCode::Char('L') => self.logs = Some(0),
                 KeyCode::Char('D') => {
                     let text = self.debug_report(rendered);
@@ -2062,7 +2109,7 @@ impl App {
                 if self.zoom.take().is_some() {
                     self.message = None; // "zoom — any key closes"
                 }
-                self.show_help = false;
+                self.help = None;
                 self.debug = None;
                 self.logs = None;
                 self.pager = None;
@@ -2237,7 +2284,7 @@ pub(super) mod tests {
     #[test]
     fn input_request_closes_overlays_so_keys_reach_the_box() {
         let (mut app, mut r) = one_cell_app("input-overlay");
-        app.show_help = true;
+        app.help = Some(Help::default());
         app.logs = Some(0);
         let request = jupyter_protocol::messaging::JupyterMessage::new(
             jupyter_protocol::messaging::InputRequest::default(),
@@ -2247,7 +2294,7 @@ pub(super) mod tests {
             Event::Input { request: Box::new(request), prompt: "name: ".into(), password: false },
             &mut r,
         );
-        assert!(!app.show_help && app.logs.is_none());
+        assert!(app.help.is_none() && app.logs.is_none());
         app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE), &mut r);
         assert_eq!(app.stdin_req.as_ref().unwrap().buf, "a");
     }
