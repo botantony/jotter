@@ -29,7 +29,7 @@ Kept up to date after the report; last change 2026-11-19. Commits are on the `ma
 | F-09 stderr looks the same as stdout | Fixed | stderr is dim red (`489398f`). |
 | F-10 Transparent image areas render dark in half-blocks | Closed, won't fix | See F-03. |
 | F-11 Shell completions list the hidden `--generate` | Fixed | `340c8c0`. |
-| F-12 Recovery prompt overstates changed cells | Open | Under discussion. |
+| F-12 Recovery prompt overstates changed cells | Fixed | The prompt no longer counts cells: it only says how old the autosave is. |
 | F-13 Test notebook not in canonical nbformat | Fixed | #8. |
 | F-14 Playbook statements that no longer match | Fixed | #8. |
 | F-15 Plot keeps a white frame on dark themes | In progress | Frame-only recolouring for pictures in a white frame; in review. |

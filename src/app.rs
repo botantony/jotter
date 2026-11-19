@@ -326,18 +326,14 @@ fn age(t: SystemTime) -> String {
     }
 }
 
-/// Cells whose type/source/outputs differ (ids are ignored: a pre-4.5 file
-/// gets fresh random ids on every load).
-fn differing_cells(a: &Notebook, b: &Notebook) -> usize {
-    let n = a.cells.len().max(b.cells.len());
-    (0..n)
-        .filter(|&i| match (a.cells.get(i), b.cells.get(i)) {
-            (Some(x), Some(y)) => {
-                (&x.cell_type, &x.source, &x.outputs) != (&y.cell_type, &y.source, &y.outputs)
-            }
-            _ => true,
-        })
-        .count()
+/// Whether the cells' type/source/outputs match (ids are ignored: a pre-4.5
+/// file gets fresh random ids on every load).
+fn same_cells(a: &Notebook, b: &Notebook) -> bool {
+    let key = |c| {
+        let c: &crate::notebook::Cell = c;
+        (&c.cell_type, &c.source, &c.outputs)
+    };
+    a.cells.iter().map(key).eq(b.cells.iter().map(key))
 }
 
 /// `~/x` -> `$HOME/x`; anything else as typed (relative to the cwd).
@@ -442,15 +438,13 @@ impl App {
         let side = self.autosave_path();
         let Some(when) = mtime(&side) else { return };
         match Notebook::read_ipynb(&side) {
-            Ok(saved) => match differing_cells(&saved, &self.notebook) {
-                0 => {
-                    let _ = std::fs::remove_file(&side);
-                }
-                n => {
-                    let summary = format!("autosave from {} ago, {n} cell(s) differ", age(when));
-                    self.confirm = Some(Confirm::Recover(Box::new(saved), summary));
-                }
-            },
+            Ok(saved) if same_cells(&saved, &self.notebook) => {
+                let _ = std::fs::remove_file(&side);
+            }
+            Ok(saved) => {
+                let summary = format!("autosave from {} ago", age(when));
+                self.confirm = Some(Confirm::Recover(Box::new(saved), summary));
+            }
             Err(e) => self.message = Some(format!("unreadable autosave {}: {e:#}", side.display())),
         }
     }
@@ -2349,7 +2343,7 @@ pub(super) mod tests {
         // recovery prompt: r swaps in the autosaved notebook as a dirty buffer
         let mut saved = app.notebook.clone();
         saved.cells[0].source = "unsaved work".into();
-        assert_eq!(differing_cells(&saved, &app.notebook), 1);
+        assert!(!same_cells(&saved, &app.notebook));
         app.confirm = Some(Confirm::Recover(Box::new(saved), "x".into()));
         app.on_key(key('r'), &mut r);
         assert_eq!(sources(&app), ["unsaved work"]);
