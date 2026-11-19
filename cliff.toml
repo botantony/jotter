@@ -38,6 +38,9 @@ commit_preprocessors = [
   { pattern = '^feat: zt, zz, zb scroll the selected cell to the top, middle, bottom', replace = "feat: scroll the selected cell to the top, middle or bottom with zt, zz, zb" },
   # squash-merged PR whose title isn't a conventional commit
   { pattern = '^Showcase clip tape, and fix flicker on updating kitty images \(#2\)', replace = "fix: updating plots no longer flicker or blank in kitty, and each frame is drawn as one synchronized update" },
+  { pattern = '^macOS test harness and 0.6.0 test report \(#8\)', replace = "docs: test harness and 0.6.0 test report for macOS (#8)" },
+  # typo in a pushed title
+  { pattern = '^fix: shift-tab only shows doc wihout completion window open', replace = "fix: Shift+Tab shows docs only while the completion popup is closed" },
 ]
 commit_parsers = [
   { message = "^feat", group = "<!-- 0 -->Features" },
