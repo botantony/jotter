@@ -19,6 +19,16 @@ pub fn generate(mut cmd: clap::Command, dir: &Path) -> Result<()> {
     clap_mangen::Man::new(cmd.clone())
         .render(&mut std::fs::File::create(dir.join("man/jotter.1"))?)?;
     let completions = dir.join("completions");
+    // clap_complete offers hidden flags too: generate from a command without them
+    let mut cmd = clap::Command::new("jotter")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about(cmd.get_about().cloned().unwrap_or_default())
+        .long_about(cmd.get_long_about().cloned().unwrap_or_default())
+        .args(
+            cmd.get_arguments()
+                .filter(|a| !a.is_hide_set() && !matches!(a.get_id().as_str(), "help" | "version"))
+                .cloned(),
+        );
     for shell in [Shell::Bash, Shell::Zsh, Shell::Fish] {
         clap_complete::generate_to(shell, &mut cmd, "jotter", &completions)?;
     }
