@@ -1,13 +1,13 @@
 ---
 title: "Terminal setup"
-description: "Which terminals give you inline images and the full keyboard, and how to set up tmux."
+description: "Which terminals jOtter runs in, which give you the full keyboard, and how to set up tmux."
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-jOtter runs in any terminal. Two terminal features make it much nicer, and not every terminal has them:
+jOtter relies on two terminal features. The first is required, the second makes it nicer:
 
-- **Graphics.** Plots and equations render as real images in terminals that support an image protocol. Everywhere else they are drawn with Unicode half-block characters: recognisable, but blocky.
+- **Graphics.** Plots and equations render as images, so jOtter needs a terminal with an image protocol. In a terminal without one it prints an error and doesn't start.
 - **The kitty keyboard protocol.** Most terminals send the same bytes for <kbd>Enter</kbd>, <kbd>Shift</kbd>+<kbd>Enter</kbd> and <kbd>Ctrl</kbd>+<kbd>Enter</kbd>. With this protocol jOtter can tell them apart, so <kbd>Shift</kbd>+<kbd>Enter</kbd> runs a cell like in JupyterLab.
 
 jOtter detects both when it starts and needs no configuration. See the [terminal compatibility table](/jotter/reference/terminals/) for details on each terminal.
@@ -18,9 +18,9 @@ jOtter detects both when it starts and needs no configuration. See the [terminal
 
 ## Other terminals
 
-**Images:** jOtter uses the best protocol your terminal offers: kitty graphics, then sixel, then the iTerm2 protocol, then half-blocks. Ghostty uses kitty graphics, foot uses sixel and WezTerm the iTerm2 protocol; all of them show sharp images. xterm does sixel when started as a VT340 (`xterm -ti vt340`). Alacritty and GNOME Terminal have no image protocol, and Konsole's sixel and kitty implementations are incomplete in ways jOtter's image library can't use, so these three get half-blocks.
+**Images:** jOtter uses the best protocol your terminal offers: kitty graphics, then sixel, then the iTerm2 protocol. Ghostty uses kitty graphics, foot uses sixel and WezTerm the iTerm2 protocol; all of them show sharp images. xterm does sixel when started as a VT340 (`xterm -ti vt340`). macOS Terminal.app, Alacritty and GNOME Terminal have no image protocol, and Konsole's sixel and kitty implementations are incomplete in ways jOtter's image library can't use, so these four are not supported.
 
-**Keys:** kitty, Ghostty, foot, Alacritty and Konsole speak the kitty keyboard protocol. WezTerm does with `enable_kitty_keyboard = true` in its config. GNOME Terminal and xterm don't. Without it, use these instead:
+**Keys:** kitty, Ghostty and foot speak the kitty keyboard protocol. WezTerm does with `enable_kitty_keyboard = true` in its config. xterm doesn't. Without it, use these instead:
 
 | Instead of | Use |
 | --- | --- |

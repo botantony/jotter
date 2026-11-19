@@ -104,7 +104,6 @@ async fn main() -> Result<()> {
     if let Some(warning) = config_warning {
         app.message = Some(warning);
     }
-    app.spawn_kernel();
 
     let mut terminal = ratatui::init(); // installs a panic hook that restores the terminal
     // The alternate screen may still hold a killed session's frame (kill -9
@@ -114,7 +113,7 @@ async fn main() -> Result<()> {
     // Two round trips before EventStream claims stdin, each ending at a
     // reply every terminal sends (DSR, DA1) so the timeouts only matter for
     // a terminal that answers nothing: the graphics protocol and cell size
-    // (falls back to unicode halfblocks), then the colours for recolouring
+    // (jOtter doesn't start without one), then the colours for recolouring
     // plots together with the keyboard protocol (Shift+Enter, Ctrl+Enter as
     // distinct keys).
     let picker = if args.no_images {
@@ -127,7 +126,16 @@ async fn main() -> Result<()> {
             },
         )
         .ok()
+        .filter(|p| p.protocol_type() != ratatui_image::picker::ProtocolType::Halfblocks)
     };
+    if picker.is_none() && !args.no_images {
+        let _ = ratatui::try_restore();
+        anyhow::bail!(
+            "this terminal has no graphics protocol (kitty graphics, sixel or iTerm2), which \
+             jOtter needs: use kitty, Ghostty, foot or WezTerm, or pass --no-images"
+        );
+    }
+    app.spawn_kernel();
     let (palette, enhanced) = recolor::query();
     recolor::init(palette.filter(|_| picker.is_some() && config::get().recolor_plots));
     // kitty keeps images across a crashed session: drop them all

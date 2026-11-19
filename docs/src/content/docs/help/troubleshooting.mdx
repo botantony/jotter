@@ -34,13 +34,19 @@ If that isn't your project's Python, activate the right environment before start
 
 The status line shows the reason and `R to restart`. The most common cause is running out of memory. Press <kbd>R</kbd> to start a fresh kernel, and run jOtter with `--log` to see what the kernel printed before it died.
 
-## Images are blocky, or missing
+## jOtter says the terminal has no graphics protocol
 
-Blocky images mean your terminal has no image protocol, so jOtter falls back to half-block characters. Use a terminal with kitty graphics or sixel support; see [Terminal compatibility](/jotter/reference/terminals/).
+jOtter needs a terminal with kitty graphics, sixel or the iTerm2 protocol and doesn't start without one. Use one of the terminals in [Terminal compatibility](/jotter/reference/terminals/).
+
+## Images are missing
 
 - **Inside tmux**, add `set -g allow-passthrough on` to `~/.tmux.conf`.
 - **Over SSH**, image support depends on your local terminal and works the same as locally.
 - Were images turned off with `--no-images`?
+
+## The terminal is garbled after jOtter was killed
+
+If jOtter is killed with `kill -9`, it can't restore the terminal. Run `reset`. In kitty, leftover images are cleared the next time jOtter starts.
 
 ## Images are cut off at the right
 

@@ -8,7 +8,7 @@ You need:
 
 - An M-series Mac on macOS 13 or newer, with zsh as your shell (the default).
 - [Homebrew](https://brew.sh) and uv: `brew install uv`.
-- Your usual terminal, plus Terminal.app, which every Mac has. kitty or Ghostty is the best-supported case and worth installing for step 4: `brew install --cask kitty` or `brew install --cask ghostty`.
+- A supported terminal. Terminal.app has no image protocol, so jOtter doesn't start there. kitty or Ghostty is the best-supported case: `brew install --cask kitty` or `brew install --cask ghostty`.
 
 Each step says what to run, what should happen, and ends with a checklist. For every item, note pass or fail in `REPORT.md` with one line on what you saw; "image was garbled at the bottom" is plenty. When something misbehaves, run it again with a log, reproduce it, quit, and the log is already where it belongs:
 
@@ -83,7 +83,7 @@ Run `jotter test.ipynb`, then press `X` to run every cell. The status line brief
 | --- | --- | --- |
 | 1 | Markdown with inline and display math | Drawn equations, not raw `$` source; a bulleted list |
 | 2 | Prints the Python path and the macOS version | A path inside `jotter-test/.venv`. Copy both lines into the report |
-| 3 | A matplotlib line plot | Inside the terminal, never a separate window. Sharp in kitty, Ghostty, iTerm2 and WezTerm; blocky in Terminal.app and Alacritty |
+| 3 | A matplotlib line plot | Inside the terminal, never a separate window. Sharp in every supported terminal |
 | 4 | A colour image of the Mandelbrot set | A smooth, complete viridis gradient |
 | 5 | SymPy returns LaTeX | A drawn equation |
 | 6 | A pandas DataFrame | An aligned table |
@@ -104,16 +104,16 @@ Check:
 
 ## Step 4: Terminals
 
-Run the same five-minute script in every terminal you can. Terminal.app is the floor everyone has; kitty or Ghostty is the ceiling. The table says what each should do, so you know whether a blocky image is a bug or the expected fallback. Remember `source env.zsh` in each new window.
+Run the same five-minute script in every terminal you can. The table says what each should do. Terminal.app and Alacritty have no image protocol: there `jotter test.ipynb` should print a one-line error naming the supported terminals and leave the shell usable, and the script ends. Remember `source env.zsh` in each new window.
 
 | Terminal | Install | Images | Shift+Enter and Ctrl+Enter | `yy` to clipboard |
 | --- | --- | --- | --- | --- |
-| Terminal.app | built in | coarse half-block image | no: use `r` and `Space`. Shift+Enter opens the cell editor; Ctrl+Enter opens Terminal's own New Tab menu, `Esc` closes it | no, Terminal.app has no OSC 52 |
+| Terminal.app | built in | not supported: jOtter prints an error and exits | n/a | n/a |
 | kitty | `brew install --cask kitty` | sharp | yes | yes, may ask once |
 | Ghostty | `brew install --cask ghostty` | sharp | yes | yes |
 | iTerm2 | `brew install --cask iterm2` | sharp | 3.5 and newer: should work; older: `r` and `Space` | after enabling Settings, General, Selection, "Applications in terminal may access clipboard" |
 | WezTerm | `brew install --cask wezterm` | sharp | only with `enable_kitty_keyboard = true` in `~/.wezterm.lua` | yes |
-| Alacritty | `brew install --cask alacritty` | coarse half-block image | yes | yes |
+| Alacritty | `brew install --cask alacritty` | not supported: jOtter prints an error and exits | n/a | n/a |
 | Warp | `brew install --cask warp` | unknown: note what you see | unknown | unknown |
 
 The script, in each terminal:
