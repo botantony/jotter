@@ -23,7 +23,7 @@ impl App {
             mouse.kind,
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::Down(_)
         ) {
-            self.follow = false; // manual movement
+            self.exec.follow = false; // manual movement
         }
         match mouse.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
@@ -34,14 +34,16 @@ impl App {
                 // under the pointer. A fresh gesture re-decides from hover.
                 const GESTURE_GAP: std::time::Duration = std::time::Duration::from_millis(400);
                 let mut target = self
+                    .view
                     .wheel_latch
                     .filter(|(t, _)| t.elapsed() < GESTURE_GAP)
                     .map(|(_, tgt)| tgt)
                     .unwrap_or_else(|| {
                         match self
+                            .view
                             .body
                             .contains((mouse.column, mouse.row).into())
-                            .then(|| self.hit.get((mouse.row - self.body.y) as usize))
+                            .then(|| self.view.hit.get((mouse.row - self.view.body.y) as usize))
                             .flatten()
                         {
                             Some(&Hit { cell, kind: HitKind::Output })
@@ -69,13 +71,14 @@ impl App {
                     }
                 }
                 if target == WheelTarget::View {
-                    self.scroll = self
+                    self.view.scroll = self
+                        .view
                         .scroll
                         .saturating_add_signed(delta)
-                        .min(self.content_lines.saturating_sub(1));
-                    self.manual_scroll = true;
+                        .min(self.view.content_lines.saturating_sub(1));
+                    self.view.manual_scroll = true;
                 }
-                self.wheel_latch = Some((Instant::now(), target));
+                self.view.wheel_latch = Some((Instant::now(), target));
             }
             MouseEventKind::Down(MouseButton::Left) => self.click(mouse.column, mouse.row),
             _ => {}
@@ -83,26 +86,27 @@ impl App {
     }
 
     fn click(&mut self, x: u16, y: u16) {
-        let body = self.body;
+        let body = self.view.body;
         if y < body.y || y >= body.y + body.height || x < body.x {
             return;
         }
         // hit map is window-relative (only visible rows are materialized)
-        let Some(&Hit { cell, kind }) = self.hit.get((y - body.y) as usize) else {
+        let Some(&Hit { cell, kind }) = self.view.hit.get((y - body.y) as usize) else {
             return;
         };
         let double = self
+            .view
             .last_click
             .take()
             .is_some_and(|(t, px, py)| t.elapsed().as_millis() < 400 && px == x && py == y);
-        self.last_click = Some((Instant::now(), x, y));
+        self.view.last_click = Some((Instant::now(), x, y));
 
         if self.editor.is_some() && cell != self.selected {
             self.commit_editor();
         }
         self.visual = None;
         self.selected = cell;
-        self.manual_scroll = true; // a click never scrolls the view
+        self.view.manual_scroll = true; // a click never scrolls the view
         match kind {
             HitKind::Source { line: row, col: col0 } => {
                 // markdown renders rich when not edited: a single click only

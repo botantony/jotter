@@ -209,7 +209,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         app.logged_status = Some(m.clone());
     }
     let lay = layout(app, frame.area());
-    app.hit = paint_cells(frame, app, &lay);
+    app.view.hit = paint_cells(frame, app, &lay);
     let cursor_at = paint_cursor(frame, app, &lay);
     paint_status(frame, app, lay.status);
     paint_overlays(frame, app, &lay, cursor_at);
@@ -288,7 +288,7 @@ fn layout(app: &mut App, area: Rect) -> FrameLayout {
     // until the neighbourhood is app.rendered. Each round renders at least one
     // cell, so this ends.
     let n = app.notebook.cells.len();
-    let align = app.align.take();
+    let align = app.view.align.take();
     loop {
         // prompt + body + separator
         lay.heights = (0..n).map(|i| 1 + lay.view(&app.rendered, i).body() + 1).collect();
@@ -299,12 +299,12 @@ fn layout(app: &mut App, area: Rect) -> FrameLayout {
         for (b, &h) in app.rendered.blocks.iter_mut().zip(&lay.heights) {
             if let Some(old) = b.last_h.replace(h) {
                 old_end += old;
-                if old_end <= app.scroll {
+                if old_end <= app.view.scroll {
                     shift += h as isize - old as isize;
                 }
             }
         }
-        app.scroll = app.scroll.saturating_add_signed(shift);
+        app.view.scroll = app.view.scroll.saturating_add_signed(shift);
         lay.starts.clear();
         lay.total = 0;
         for &h in &lay.heights {
@@ -315,38 +315,38 @@ fn layout(app: &mut App, area: Rect) -> FrameLayout {
         // Keep selection visible (cursor line when editing, whole cell
         // otherwise) — unless the user wheel-scrolled away; then only clamp
         // to the content.
-        if app.manual_scroll || lay.starts.is_empty() {
-            app.scroll = app.scroll.min(lay.total.saturating_sub(1));
+        if app.view.manual_scroll || lay.starts.is_empty() {
+            app.view.scroll = app.view.scroll.min(lay.total.saturating_sub(1));
         } else if let Some((row, _)) = lay.editor_cursor {
             let cur = lay.starts[app.selected] + 1 + row;
-            if cur >= app.scroll + height {
-                app.scroll = cur + 1 - height;
+            if cur >= app.view.scroll + height {
+                app.view.scroll = cur + 1 - height;
             }
-            if cur < app.scroll {
-                app.scroll = cur;
+            if cur < app.view.scroll {
+                app.view.scroll = cur;
             }
         } else {
             let sel_start = lay.starts[app.selected];
             let sel_end = sel_start + lay.heights[app.selected] - 1;
             // zt/zz/zb; a cell taller than the screen still shows its top
             match align {
-                Some(Align::Top) => app.scroll = sel_start,
+                Some(Align::Top) => app.view.scroll = sel_start,
                 Some(Align::Middle) => {
-                    app.scroll = ((sel_start + sel_end) / 2).saturating_sub(height / 2)
+                    app.view.scroll = ((sel_start + sel_end) / 2).saturating_sub(height / 2)
                 }
-                Some(Align::Bottom) => app.scroll = sel_end.saturating_sub(height),
+                Some(Align::Bottom) => app.view.scroll = sel_end.saturating_sub(height),
                 None => {}
             }
-            if sel_end > app.scroll + height {
-                app.scroll = sel_end - height;
+            if sel_end > app.view.scroll + height {
+                app.view.scroll = sel_end - height;
             }
-            if sel_start < app.scroll {
-                app.scroll = sel_start;
+            if sel_start < app.view.scroll {
+                app.view.scroll = sel_start;
             }
         }
 
         // render the screen plus one screen of margin on each side
-        let (lo, hi) = (app.scroll.saturating_sub(height), app.scroll + 2 * height);
+        let (lo, hi) = (app.view.scroll.saturating_sub(height), app.view.scroll + 2 * height);
         let mut any = false;
         for i in 0..n {
             if lay.starts[i] < hi && lay.starts[i] + lay.heights[i] > lo {
@@ -360,11 +360,11 @@ fn layout(app: &mut App, area: Rect) -> FrameLayout {
     }
     // over the memory budget: drop the least recently seen content (keep the
     // row counts), never the render window
-    let (lo, hi) = (app.scroll.saturating_sub(height), app.scroll + 2 * height);
+    let (lo, hi) = (app.view.scroll.saturating_sub(height), app.view.scroll + 2 * height);
     app.rendered.evict(|i| lay.starts[i] < hi && lay.starts[i] + lay.heights[i] > lo);
     app.rendered.frame += 1;
-    app.content_lines = lay.total;
-    app.body = body;
+    app.view.content_lines = lay.total;
+    app.view.body = body;
     lay
 }
 
@@ -381,14 +381,14 @@ fn paint_cells(frame: &mut Frame, app: &App, lay: &FrameLayout) -> Vec<crate::ap
         (true, true) => Pick::Visual,
     };
     // Materialize only the visible window (notebooks can be huge; frames are not).
-    let end = (app.scroll + height).min(lay.total);
-    let mut lines: Vec<Line> = Vec::with_capacity(end.saturating_sub(app.scroll));
-    let mut hit: Vec<Hit> = Vec::with_capacity(end.saturating_sub(app.scroll));
-    let mut ci = match lay.starts.binary_search(&app.scroll) {
+    let end = (app.view.scroll + height).min(lay.total);
+    let mut lines: Vec<Line> = Vec::with_capacity(end.saturating_sub(app.view.scroll));
+    let mut hit: Vec<Hit> = Vec::with_capacity(end.saturating_sub(app.view.scroll));
+    let mut ci = match lay.starts.binary_search(&app.view.scroll) {
         Ok(i) => i,
         Err(i) => i.saturating_sub(1),
     };
-    for a in app.scroll..end {
+    for a in app.view.scroll..end {
         while ci + 1 < lay.starts.len() && a >= lay.starts[ci + 1] {
             ci += 1;
         }
@@ -399,9 +399,10 @@ fn paint_cells(frame: &mut Frame, app: &App, lay: &FrameLayout) -> Vec<crate::ap
         let local = a - lay.starts[ci];
         let (line, kind) = if local == 0 {
             let run = app
+                .exec
                 .running
                 .iter()
-                .find_map(|(m, &c)| (c == ci).then(|| app.started.contains_key(m)));
+                .find_map(|(m, &c)| (c == ci).then(|| app.exec.started.contains_key(m)));
             (
                 header_line(
                     cell,
@@ -472,7 +473,7 @@ fn paint_cells(frame: &mut Frame, app: &App, lay: &FrameLayout) -> Vec<crate::ap
             }
             let (area, pos) = if in_src {
                 // source images: straight mapping, clipped by the viewport
-                let rel = lay.starts[i] as isize + 1 + row as isize - app.scroll as isize;
+                let rel = lay.starts[i] as isize + 1 + row as isize - app.view.scroll as isize;
                 if rel + (img.rows as isize) <= 0 || rel >= body.height as isize {
                     continue;
                 }
@@ -483,7 +484,7 @@ fn paint_cells(frame: &mut Frame, app: &App, lay: &FrameLayout) -> Vec<crate::ap
                 if ol + img.rows as usize <= v.win_start || ol >= v.win_start + v.win_rows {
                     continue;
                 }
-                let wtop = lay.starts[i] as isize + 1 + v.src as isize - app.scroll as isize;
+                let wtop = lay.starts[i] as isize + 1 + v.src as isize - app.view.scroll as isize;
                 let y0 = wtop.max(0);
                 let y1 = (wtop + v.win_rows as isize).min(body.height as isize);
                 if y1 <= y0 {
@@ -512,10 +513,10 @@ fn paint_cursor(frame: &mut Frame, app: &App, lay: &FrameLayout) -> Option<(u16,
     let mut cursor_at = None;
     if let Some((row, x)) = lay.editor_cursor {
         let abs = lay.starts[app.selected] + 1 + row;
-        if abs >= app.scroll && ((abs - app.scroll) as u16) < body.height {
+        if abs >= app.view.scroll && ((abs - app.view.scroll) as u16) < body.height {
             let pos = (
                 body.x + (x as u16 + GUTTER).min(body.width.saturating_sub(1)),
-                body.y + (abs - app.scroll) as u16,
+                body.y + (abs - app.view.scroll) as u16,
             );
             frame.set_cursor_position(pos);
             cursor_at = Some(pos);
@@ -537,9 +538,9 @@ fn paint_status(frame: &mut Frame, app: &App, status: Rect) {
         Some(ModeKind::Cmdline) => (" CMD ", Color::Yellow),
         Some(ModeKind::Normal) => (" NORMAL ", Color::Yellow),
     };
-    let kernel_state = if app.kernel.is_none() {
+    let kernel_state = if app.exec.kernel.is_none() {
         Span::styled("◌ no kernel", Style::new().fg(Color::DarkGray))
-    } else if app.kernel_busy {
+    } else if app.exec.kernel_busy {
         Span::styled("● busy", Style::new().fg(Color::Yellow))
     } else {
         Span::styled("○ idle", Style::new().fg(Color::Green))

@@ -250,7 +250,7 @@ impl App {
         if !matches!(key.code, KeyCode::Char('(' | ',')) {
             return;
         }
-        let (Some(name), Some(kernel)) = (callee(&source, site.open), &self.kernel) else {
+        let (Some(name), Some(kernel)) = (callee(&source, site.open), &self.exec.kernel) else {
             return;
         };
         // inspect with the cursor right after the name, as Shift+Tab does

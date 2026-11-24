@@ -189,61 +189,12 @@ pub enum Action {
     Copy(String),
 }
 
-pub struct App {
-    pub notebook: Notebook,
-    /// What the notebook looks like: the render cache, kept in step with
-    /// `notebook` by every change to it.
-    pub rendered: Rendered,
-    /// Empty for a scratchpad (`jotter` without a file); `:w name` names it.
-    pub path: PathBuf,
-    pub selected: usize,
-    /// First visible rendered line; adjusted in ui::draw to keep selection visible.
-    pub scroll: usize,
-    pub should_quit: bool,
-    /// One-shot status message.
-    pub message: Option<String>,
-    /// The terminal speaks the kitty keyboard protocol (Shift+Enter works).
-    pub keyboard_protocol: bool,
+/// The kernel session: its process, and which cells it is running.
+pub struct Exec {
     pub kernel: Option<Kernel>,
     pub kernel_busy: bool,
     /// In-flight executions: msg_id -> cell index (remapped on cell ops).
     pub running: HashMap<String, usize>,
-    pub dirty: bool,
-    /// Some(_) while a cell is being edited.
-    pub editor: Option<Backend>,
-    /// Embedded nvim (editor = "nvim"), spawned lazily on first cell edit and
-    /// parked here between edits so per-cell buffers keep their undo history.
-    nvim: Option<NvimSession>,
-    /// The first session, started in the background when the notebook opens
-    /// so the first edit doesn't wait for the user's nvim config to load.
-    nvim_spawn: Option<std::thread::JoinHandle<Result<NvimSession>>>,
-    /// Line -> cell mapping of the last draw (mouse support).
-    pub hit: Vec<Hit>,
-    /// Notebook body area of the last draw.
-    pub body: Rect,
-    /// View was wheel-scrolled: draw must not snap back to the selection.
-    pub manual_scroll: bool,
-    /// `zz`/`zt`/`zb`: where the next draw puts the selected cell.
-    pub align: Option<Align>,
-    pub overlay: Option<Overlay>,
-    /// Total rendered lines of the last draw (scroll bound).
-    pub content_lines: usize,
-    last_click: Option<(Instant, u16, u16)>,
-    /// Pending question; the next key answers it (shown on the status line).
-    pub confirm: Option<Confirm>,
-    /// First key of a two-key chord (dd, yy, gg).
-    pending: Option<char>,
-    /// Vim-style jump list of cell ids (ids survive inserts and moves);
-    /// `jump_at` == len means "at the newest position, not in the list".
-    jumps: Vec<String>,
-    jump_at: usize,
-    /// `ma`: mark letter -> cell id. Session only; a mark on a deleted cell
-    /// is gone until undo brings the cell (and its id) back.
-    pub marks: std::collections::BTreeMap<char, String>,
-    /// Cells deleted or yanked last (`p` pastes them all).
-    yanked: Vec<Cell>,
-    /// `V`: anchor cell of the visual selection, which runs to `selected`.
-    pub visual: Option<usize>,
     kernel_name: String,
     events_tx: mpsc::UnboundedSender<Event>,
     /// Current kernel launch (Ready/LaunchFailed of older launches are stale).
@@ -261,13 +212,78 @@ pub struct App {
     /// sockets, so outputs may still arrive after the reply — only the idle
     /// status (ordered on iopub after all outputs) proves the stream is done.
     half_done: HashSet<String>,
+    /// Executions the kernel has actually started (vs still queued), with
+    /// their start time for the gutter timing display.
+    pub started: HashMap<String, Instant>,
+}
+
+/// Scroll position and the geometry of the last draw (mouse support).
+#[derive(Default)]
+pub struct View {
+    /// First visible rendered line; adjusted in ui::draw to keep selection visible.
+    pub scroll: usize,
+    /// Line -> cell mapping of the last draw (mouse support).
+    pub hit: Vec<Hit>,
+    /// Notebook body area of the last draw.
+    pub body: Rect,
+    /// View was wheel-scrolled: draw must not snap back to the selection.
+    pub manual_scroll: bool,
+    /// `zz`/`zt`/`zb`: where the next draw puts the selected cell.
+    pub align: Option<Align>,
+    /// Total rendered lines of the last draw (scroll bound).
+    pub content_lines: usize,
+    last_click: Option<(Instant, u16, u16)>,
+    /// Wheel-gesture latch: ticks in one burst keep their initial target even
+    /// as content moves under the pointer.
+    wheel_latch: Option<(Instant, WheelTarget)>,
+}
+
+pub struct App {
+    pub notebook: Notebook,
+    /// What the notebook looks like: the render cache, kept in step with
+    /// `notebook` by every change to it.
+    pub rendered: Rendered,
+    /// The kernel and what it is running.
+    pub exec: Exec,
+    /// Where the notebook sits on screen.
+    pub view: View,
+    /// Empty for a scratchpad (`jotter` without a file); `:w name` names it.
+    pub path: PathBuf,
+    pub selected: usize,
+    pub should_quit: bool,
+    /// One-shot status message.
+    pub message: Option<String>,
+    /// The terminal speaks the kitty keyboard protocol (Shift+Enter works).
+    pub keyboard_protocol: bool,
+    pub dirty: bool,
+    /// Some(_) while a cell is being edited.
+    pub editor: Option<Backend>,
+    /// Embedded nvim (editor = "nvim"), spawned lazily on first cell edit and
+    /// parked here between edits so per-cell buffers keep their undo history.
+    nvim: Option<NvimSession>,
+    /// The first session, started in the background when the notebook opens
+    /// so the first edit doesn't wait for the user's nvim config to load.
+    nvim_spawn: Option<std::thread::JoinHandle<Result<NvimSession>>>,
+    pub overlay: Option<Overlay>,
+    /// Pending question; the next key answers it (shown on the status line).
+    pub confirm: Option<Confirm>,
+    /// First key of a two-key chord (dd, yy, gg).
+    pending: Option<char>,
+    /// Vim-style jump list of cell ids (ids survive inserts and moves);
+    /// `jump_at` == len means "at the newest position, not in the list".
+    jumps: Vec<String>,
+    jump_at: usize,
+    /// `ma`: mark letter -> cell id. Session only; a mark on a deleted cell
+    /// is gone until undo brings the cell (and its id) back.
+    pub marks: std::collections::BTreeMap<char, String>,
+    /// Cells deleted or yanked last (`p` pastes them all).
+    yanked: Vec<Cell>,
+    /// `V`: anchor cell of the visual selection, which runs to `selected`.
+    pub visual: Option<usize>,
     /// mtime of the file as we last saw it on disk (external-change check).
     disk_mtime: Option<SystemTime>,
     /// Changes since the last autosave/save (drives the sidecar write).
     autosave_pending: bool,
-    /// Executions the kernel has actually started (vs still queued), with
-    /// their start time for the gutter timing display.
-    pub started: HashMap<String, Instant>,
     /// Status-line text input, and the committed search query.
     pub prompt: Option<Prompt>,
     search: Option<String>,
@@ -287,9 +303,6 @@ pub struct App {
     count: Option<usize>,
     /// Last status message sent to the log (ui::draw logs each one once).
     pub logged_status: Option<String>,
-    /// Wheel-gesture latch: ticks in one burst keep their initial target even
-    /// as content moves under the pointer.
-    wheel_latch: Option<(Instant, WheelTarget)>,
 }
 
 /// Jump list depth (vim's is 100).
@@ -318,16 +331,27 @@ impl App {
         let mut app = Self {
             // without graphics until the terminal is known (`set_picker`)
             rendered: Rendered::build(&notebook, None, dir),
+            exec: Exec {
+                kernel: None,
+                kernel_busy: false,
+                running: HashMap::new(),
+                started: HashMap::new(),
+                kernel_name,
+                events_tx,
+                launch: 0,
+                kernel_starting: false,
+                deferred: Vec::new(),
+                follow: false,
+                pending_clear: HashSet::new(),
+                half_done: HashSet::new(),
+            },
+            view: View::default(),
             notebook,
             path,
             selected: 0,
-            scroll: 0,
             should_quit: false,
             message: None,
             keyboard_protocol: false,
-            kernel: None,
-            kernel_busy: false,
-            running: HashMap::new(),
             dirty: false,
             editor: None,
             nvim: None,
@@ -335,13 +359,7 @@ impl App {
                 let user_config = crate::config::get().nvim_user_config;
                 std::thread::spawn(move || NvimSession::spawn(user_config))
             }),
-            hit: Vec::new(),
-            body: Rect::default(),
-            manual_scroll: false,
-            align: None,
             overlay: None,
-            content_lines: 0,
-            last_click: None,
             confirm: None,
             pending: None,
             jumps: Vec::new(),
@@ -349,17 +367,8 @@ impl App {
             marks: Default::default(),
             yanked: Vec::new(),
             visual: None,
-            kernel_name,
-            events_tx,
-            launch: 0,
-            kernel_starting: false,
-            deferred: Vec::new(),
-            follow: false,
-            pending_clear: HashSet::new(),
-            half_done: HashSet::new(),
             disk_mtime: None,
             autosave_pending: false,
-            started: HashMap::new(),
             prompt: None,
             search: None,
             overwrite_armed: None,
@@ -372,7 +381,6 @@ impl App {
             redo_stack: Vec::new(),
             count: None,
             logged_status: None,
-            wheel_latch: None,
         };
         app.disk_mtime = mtime(&app.path);
         if is_new && !app.is_scratch() {
@@ -494,12 +502,14 @@ impl App {
                     out += &format!("render: {}\n", b.debug_summary());
                 }
                 let runs: Vec<String> = self
+                    .exec
                     .running
                     .iter()
                     .filter(|&(_, &c)| c == self.selected)
                     .map(|(m, _)| {
-                        let state = if self.started.contains_key(m) { "running" } else { "queued" };
-                        let half = if self.half_done.contains(m) { ", half-done" } else { "" };
+                        let state =
+                            if self.exec.started.contains_key(m) { "running" } else { "queued" };
+                        let half = if self.exec.half_done.contains(m) { ", half-done" } else { "" };
                         format!("{state}{half} msg {m}")
                     })
                     .collect();
@@ -512,21 +522,21 @@ impl App {
         }
         out += &format!(
             "view: scroll {} of {} lines{} · body {}x{}\n",
-            self.scroll,
-            self.content_lines,
-            if self.manual_scroll { " (manual)" } else { "" },
-            self.body.width,
-            self.body.height
+            self.view.scroll,
+            self.view.content_lines,
+            if self.view.manual_scroll { " (manual)" } else { "" },
+            self.view.body.width,
+            self.view.body.height
         );
-        out += &match &self.kernel {
+        out += &match &self.exec.kernel {
             Some(k) => format!(
                 "kernel: {} ({}) · {} · {} in flight\n",
                 k.name,
                 k.spec_dir.display(),
-                if self.kernel_busy { "busy" } else { "idle" },
-                self.running.len()
+                if self.exec.kernel_busy { "busy" } else { "idle" },
+                self.exec.running.len()
             ),
-            None => format!("kernel: none (requested '{}')\n", self.kernel_name),
+            None => format!("kernel: none (requested '{}')\n", self.exec.kernel_name),
         };
         if let Some(c) = &self.completion {
             out += &format!(

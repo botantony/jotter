@@ -298,7 +298,7 @@ impl App {
 
     /// Shift+Tab: kernel docs for the name at `pos` of `code`, into the pager.
     pub(super) fn request_docs(&mut self, code: String, pos: usize) {
-        match &self.kernel {
+        match &self.exec.kernel {
             Some(kernel) => self.pending_inspect = Some(kernel.inspect(code, pos)),
             None => self.message = Some("no kernel — docs need one".into()),
         }
@@ -328,7 +328,7 @@ impl App {
     /// a (fast, live-object) inspect, as if it were accepted. Each is asked
     /// once; replies fill in as they land.
     pub(super) fn resolve_visible(&mut self) {
-        if self.kernel.is_none() {
+        if self.exec.kernel.is_none() {
             return;
         }
         let rows = self.visible_rows();
@@ -342,7 +342,7 @@ impl App {
         if !asks.is_empty() {
             log::debug!("completion: resolving {} visible candidate(s)", asks.len());
         }
-        let (Some(c), Some(kernel)) = (&mut self.completion, &self.kernel) else {
+        let (Some(c), Some(kernel)) = (&mut self.completion, &self.exec.kernel) else {
             return;
         };
         for (text, code, pos) in asks {
@@ -354,7 +354,7 @@ impl App {
     }
 
     pub(super) fn request_completion(&mut self, source: String, offset: usize, explicit: bool) {
-        let Some(kernel) = &self.kernel else {
+        let Some(kernel) = &self.exec.kernel else {
             if explicit {
                 self.message = Some("no kernel — completion needs one".into());
             }
@@ -467,7 +467,7 @@ impl App {
         if matches.is_empty()
             && !c.jedi_retry
             && !crate::config::get().jedi
-            && let Some(kernel) = &self.kernel
+            && let Some(kernel) = &self.exec.kernel
             && kernel.language.eq_ignore_ascii_case("python")
         {
             kernel.execute_silent("get_ipython().Completer.use_jedi = True");

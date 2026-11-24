@@ -4,9 +4,9 @@ use super::*;
 
 impl App {
     pub fn spawn_kernel(&mut self) {
-        self.message = Some(format!("starting kernel '{}'...", self.kernel_name));
-        self.launch += 1;
-        self.kernel_starting = true;
+        self.message = Some(format!("starting kernel '{}'...", self.exec.kernel_name));
+        self.exec.launch += 1;
+        self.exec.kernel_starting = true;
         let dir = self
             .path
             .parent()
@@ -14,17 +14,17 @@ impl App {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
         tokio::spawn(Kernel::launch(
-            self.kernel_name.clone(),
+            self.exec.kernel_name.clone(),
             dir,
-            self.events_tx.clone(),
-            self.launch,
+            self.exec.events_tx.clone(),
+            self.exec.launch,
         ));
     }
 
     /// A launch came to nothing: say why and drop the runs waiting for it.
     fn no_kernel(&mut self, reason: String) {
-        self.kernel_starting = false;
-        let dropped = std::mem::take(&mut self.deferred).len();
+        self.exec.kernel_starting = false;
+        let dropped = std::mem::take(&mut self.exec.deferred).len();
         self.message = Some(if dropped > 0 {
             format!("{reason} — {dropped} queued run(s) dropped")
         } else {
@@ -35,21 +35,21 @@ impl App {
     /// Kill the kernel and start a fresh one; `run_all` queues every code
     /// cell to run once it is ready.
     pub(super) fn restart_kernel(&mut self, run_all: bool) {
-        self.kernel = None; // drop kills the old process
-        self.kernel_busy = false;
+        self.exec.kernel = None; // drop kills the old process
+        self.exec.kernel_busy = false;
         self.forget_executions();
         self.stdin_req = None;
-        self.deferred.clear();
+        self.exec.deferred.clear();
         self.spawn_kernel();
         if run_all {
-            self.deferred = self
+            self.exec.deferred = self
                 .notebook
                 .cells
                 .iter()
                 .filter(|c| c.cell_type == "code")
                 .filter_map(|c| c.extra.get("id")?.as_str().map(String::from))
                 .collect();
-            self.follow = true;
+            self.exec.follow = true;
             self.message = Some("restarting kernel — then run all".into());
         }
     }
@@ -78,7 +78,7 @@ impl App {
                 {
                     meta.remove("kernelspec");
                 }
-                self.kernel_name = name;
+                self.exec.kernel_name = name;
                 self.spawn_kernel();
             }
             KeyCode::Down | KeyCode::Tab => pick.selected = (pick.selected + 1).min(last),
@@ -101,14 +101,14 @@ impl App {
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.stdin_req = None;
-                if let Some(k) = &self.kernel {
+                if let Some(k) = &self.exec.kernel {
                     k.interrupt();
                     self.message = Some("interrupt sent".into());
                 }
             }
             KeyCode::Enter | KeyCode::Esc => {
                 if let Some(req) = self.stdin_req.take()
-                    && let Some(k) = &self.kernel
+                    && let Some(k) = &self.exec.kernel
                 {
                     let value = if key.code == KeyCode::Enter { req.buf } else { String::new() };
                     k.reply_input(&req.request, value);
@@ -129,7 +129,7 @@ impl App {
     }
 
     pub(super) fn run_range(&mut self, range: std::ops::Range<usize>) {
-        self.follow = range.len() > 1;
+        self.exec.follow = range.len() > 1;
         for i in range {
             self.run_cell(i);
         }
@@ -137,45 +137,46 @@ impl App {
 
     /// Drop all in-flight execution bookkeeping (restart, death, reload).
     pub(super) fn forget_executions(&mut self) {
-        self.running.clear();
-        self.started.clear();
-        self.pending_clear.clear();
-        self.half_done.clear();
-        self.follow = false;
+        self.exec.running.clear();
+        self.exec.started.clear();
+        self.exec.pending_clear.clear();
+        self.exec.half_done.clear();
+        self.exec.follow = false;
     }
 
     /// The code cell an execution's messages route to. Anything else is
     /// dropped: a cell turned markdown mid-run must not gain outputs.
     fn target_cell(&self, parent: &str) -> Option<usize> {
-        let &idx = self.running.get(parent)?;
+        let &idx = self.exec.running.get(parent)?;
         (self.notebook.cells.get(idx)?.cell_type == "code").then_some(idx)
     }
 
     /// One of an execution's two end signals arrived; finish on the second.
     fn end_signal(&mut self, parent: String) {
-        if !self.running.contains_key(&parent) {
+        if !self.exec.running.contains_key(&parent) {
             return; // idle of kernel_info etc., or a forgotten execution
         }
-        if self.half_done.insert(parent.clone()) {
+        if self.exec.half_done.insert(parent.clone()) {
             return;
         }
-        self.half_done.remove(&parent);
+        self.exec.half_done.remove(&parent);
         // gutter timing: wall time from execute_input to the end
-        if let (Some(idx), Some(t)) = (self.target_cell(&parent), self.started.get(&parent))
+        if let (Some(idx), Some(t)) = (self.target_cell(&parent), self.exec.started.get(&parent))
             && let Some(b) = self.rendered.blocks.get_mut(idx)
         {
             b.elapsed = Some(t.elapsed());
         }
-        self.running.remove(&parent);
-        self.started.remove(&parent);
-        self.pending_clear.remove(&parent);
-        if self.running.is_empty() {
-            self.follow = false;
+        self.exec.running.remove(&parent);
+        self.exec.started.remove(&parent);
+        self.exec.pending_clear.remove(&parent);
+        if self.exec.running.is_empty() {
+            self.exec.follow = false;
         }
     }
 
     pub(super) fn remap_running(&mut self, f: impl Fn(usize) -> Option<usize>) {
-        self.running = self.running.drain().filter_map(|(k, v)| f(v).map(|v| (k, v))).collect();
+        self.exec.running =
+            self.exec.running.drain().filter_map(|(k, v)| f(v).map(|v| (k, v))).collect();
     }
 
     pub(super) fn run_cell(&mut self, idx: usize) {
@@ -185,15 +186,15 @@ impl App {
         if cell.cell_type != "code" {
             return;
         }
-        let Some(kernel) = &self.kernel else {
-            if self.kernel_starting
+        let Some(kernel) = &self.exec.kernel else {
+            if self.exec.kernel_starting
                 && let Some(id) = cell.extra.get("id").and_then(Value::as_str)
             {
-                if !self.deferred.iter().any(|d| d == id) {
-                    self.deferred.push(id.to_string());
+                if !self.exec.deferred.iter().any(|d| d == id) {
+                    self.exec.deferred.push(id.to_string());
                 }
                 self.message =
-                    Some(format!("kernel starting — {} cell(s) queued", self.deferred.len()));
+                    Some(format!("kernel starting — {} cell(s) queued", self.exec.deferred.len()));
             } else {
                 self.message = Some("no kernel — R to (re)start one".into());
             }
@@ -207,13 +208,13 @@ impl App {
         }
         let msg_id = kernel.execute(cell.source.clone());
         self.rendered.rebuild_cell(idx, cell);
-        self.running.insert(msg_id, idx);
+        self.exec.running.insert(msg_id, idx);
         self.touch_outputs();
     }
 
     pub fn apply_kernel_event(&mut self, event: Event) {
         match event {
-            Event::Ready(kernel) if kernel.launch != self.launch => {
+            Event::Ready(kernel) if kernel.launch != self.exec.launch => {
                 log::info!("dropping stale kernel from launch {}", kernel.launch);
             }
             Event::Ready(kernel) => {
@@ -242,9 +243,9 @@ impl App {
                 if kernel.language.eq_ignore_ascii_case("python") && !crate::config::get().jedi {
                     kernel.execute_silent("%config Completer.use_jedi = False");
                 }
-                self.kernel = Some(*kernel);
-                self.kernel_starting = false;
-                for id in std::mem::take(&mut self.deferred) {
+                self.exec.kernel = Some(*kernel);
+                self.exec.kernel_starting = false;
+                for id in std::mem::take(&mut self.exec.deferred) {
                     let idx = self
                         .notebook
                         .cells
@@ -255,11 +256,11 @@ impl App {
                     }
                 }
             }
-            Event::LaunchFailed { launch, .. } if launch != self.launch => {}
+            Event::LaunchFailed { launch, .. } if launch != self.exec.launch => {}
             Event::LaunchFailed { reason, .. } => self.no_kernel(reason),
-            Event::NotFound { launch, .. } if launch != self.launch => {}
+            Event::NotFound { launch, .. } if launch != self.exec.launch => {}
             Event::NotFound { wanted, mut kernels, .. } => {
-                self.kernel_starting = false; // runs queued so far wait for the pick
+                self.exec.kernel_starting = false; // runs queued so far wait for the pick
                 if kernels.is_empty() {
                     self.no_kernel(format!(
                         "kernel '{wanted}' not found, and no other is installed — pip install ipykernel in your venv"
@@ -323,7 +324,7 @@ impl App {
             Event::Output { parent, output } => {
                 if let Some(idx) = self.target_cell(&parent) {
                     let cell = &mut self.notebook.cells[idx];
-                    if self.pending_clear.remove(&parent) {
+                    if self.exec.pending_clear.remove(&parent) {
                         cell.outputs = Some(Vec::new());
                     }
                     cell.push_output(output);
@@ -333,7 +334,7 @@ impl App {
             }
             Event::Clear { parent, wait } => {
                 if wait {
-                    self.pending_clear.insert(parent);
+                    self.exec.pending_clear.insert(parent);
                 } else if let Some(idx) = self.target_cell(&parent) {
                     let cell = &mut self.notebook.cells[idx];
                     cell.outputs = Some(Vec::new());
@@ -345,10 +346,10 @@ impl App {
                 if let Some(idx) = self.target_cell(&parent) {
                     self.notebook.cells[idx].extra.insert("execution_count".into(), count.into());
                     self.touch_outputs();
-                    self.started.insert(parent, Instant::now()); // no longer queued
-                    if self.follow {
+                    self.exec.started.insert(parent, Instant::now()); // no longer queued
+                    if self.exec.follow {
                         self.selected = idx;
-                        self.manual_scroll = false;
+                        self.view.manual_scroll = false;
                     }
                 }
             }
@@ -360,15 +361,15 @@ impl App {
                 self.stdin_req = Some(StdinReq { prompt, buf: String::new(), password, request });
             }
             Event::Status { parent, busy } => {
-                self.kernel_busy = busy;
+                self.exec.kernel_busy = busy;
                 if !busy {
                     self.end_signal(parent);
                 }
             }
             Event::Done { parent } => self.end_signal(parent),
             Event::Dead(reason) => {
-                self.kernel = None;
-                self.kernel_busy = false;
+                self.exec.kernel = None;
+                self.exec.kernel_busy = false;
                 self.forget_executions();
                 self.stdin_req = None;
                 self.message = Some(format!("{reason} — R to restart"));

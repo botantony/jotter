@@ -464,7 +464,7 @@ fn long_markdown_wraps_instead_of_clipping() {
     let words: usize = buffer_rows(&terminal).iter().map(|r| r.matches("word").count()).sum();
     assert_eq!(words, 30, "every word visible across wrapped rows");
     // clicks on a continuation row map back to the one source line
-    assert!(matches!(app.hit[2].kind, crate::app::HitKind::Source { line: 0, .. }));
+    assert!(matches!(app.view.hit[2].kind, crate::app::HitKind::Source { line: 0, .. }));
 }
 
 #[test]
@@ -613,8 +613,8 @@ fn draw_windows_long_output_and_renders_cells() {
     assert!(all.contains(" markdown  ─") && all.contains("Big Title"), "{all}");
     assert!(rows[29].contains("cell 1/2"), "status line: {}", rows[29]);
     // hit map is window-relative and covers the viewport
-    assert!(matches!(app.hit[0].kind, crate::app::HitKind::Other));
-    assert_eq!(app.hit[0].cell, 0);
+    assert!(matches!(app.view.hit[0].kind, crate::app::HitKind::Other));
+    assert_eq!(app.view.hit[0].cell, 0);
 }
 
 /// The layout pass measures what a render would, without highlighting
@@ -708,15 +708,15 @@ fn only_cells_near_the_screen_render() {
     assert!(count(&app) < 30, "{} rendered", count(&app));
 
     // a math cell above the view gets its exact height: the screen stays put
-    app.manual_scroll = true;
+    app.view.manual_scroll = true;
     let before = draw_rows(&mut app);
     let above = (0..299).rev().find(|&i| i % 2 == 0 && !app.rendered.blocks[i].rendered).unwrap();
     let est = app.rendered.blocks[above].rows;
     app.rendered.ensure(above, &app.notebook.cells[above]);
     assert_ne!(app.rendered.blocks[above].rows, est, "the estimate was off");
-    let scroll = app.scroll;
+    let scroll = app.view.scroll;
     assert_eq!(draw_rows(&mut app), before);
-    assert_ne!(app.scroll, scroll, "the view moved with the content");
+    assert_ne!(app.view.scroll, scroll, "the view moved with the content");
 }
 
 #[test]

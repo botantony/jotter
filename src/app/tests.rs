@@ -37,16 +37,16 @@ pub(super) fn key(c: char) -> KeyEvent {
 #[test]
 fn runs_during_startup_are_queued_and_dropped_on_launch_failure() {
     let mut app = one_cell_app("defer");
-    app.kernel_starting = true;
-    app.launch = 3;
+    app.exec.kernel_starting = true;
+    app.exec.launch = 3;
     app.run_cell(0);
     app.run_cell(0);
-    assert_eq!(app.deferred, ["c1"], "queued once, by cell id");
+    assert_eq!(app.exec.deferred, ["c1"], "queued once, by cell id");
     // a stale launch's failure is ignored
     app.apply_kernel_event(Event::LaunchFailed { launch: 2, reason: "old".into() });
-    assert_eq!(app.deferred.len(), 1);
+    assert_eq!(app.exec.deferred.len(), 1);
     app.apply_kernel_event(Event::LaunchFailed { launch: 3, reason: "boom".into() });
-    assert!(app.deferred.is_empty() && !app.kernel_starting);
+    assert!(app.exec.deferred.is_empty() && !app.exec.kernel_starting);
     assert!(app.message.as_deref().unwrap().contains("1 queued run(s) dropped"));
 }
 
@@ -57,8 +57,8 @@ async fn missing_kernel_asks_which_one_to_start_instead() {
         "metadata".into(),
         serde_json::json!({"kernelspec": {"name": "julia-1.11", "language": "julia"}}),
     );
-    app.kernel_name = "julia-1.11".into();
-    app.launch = 1;
+    app.exec.kernel_name = "julia-1.11".into();
+    app.exec.launch = 1;
     let not_found = || Event::NotFound {
         launch: 1,
         wanted: "julia-1.11".into(),
@@ -75,8 +75,8 @@ async fn missing_kernel_asks_which_one_to_start_instead() {
     };
     assert_eq!(shown(&app), ["julia-1.12", "julia-1.10"], "only the notebook's language");
     app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(app.kernel_pick.is_none() && !app.kernel_starting, "Esc: no kernel");
-    assert_eq!(app.kernel_name, "julia-1.11");
+    assert!(app.kernel_pick.is_none() && !app.exec.kernel_starting, "Esc: no kernel");
+    assert_eq!(app.exec.kernel_name, "julia-1.11");
 
     app.apply_kernel_event(not_found());
     for c in "A-1.10".chars() {
@@ -88,11 +88,11 @@ async fn missing_kernel_asks_which_one_to_start_instead() {
     assert!(app.kernel_pick.is_some(), "Enter with no match changes nothing");
     app.on_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
     app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(app.kernel_name, "julia-1.10");
+    assert_eq!(app.exec.kernel_name, "julia-1.10");
     assert!(app.kernel_pick.is_none());
 
     // nothing for the notebook's language: everything is offered
-    app.launch = 2;
+    app.exec.launch = 2;
     app.apply_kernel_event(Event::NotFound {
         launch: 2,
         wanted: "x".into(),
@@ -105,7 +105,7 @@ async fn missing_kernel_asks_which_one_to_start_instead() {
 #[test]
 fn restart_asks_first_when_a_kernel_could_be_alive() {
     let mut app = one_cell_app("restart");
-    app.kernel_starting = true; // as if a kernel were coming up
+    app.exec.kernel_starting = true; // as if a kernel were coming up
     app.on_key(key('R'));
     assert_eq!(app.confirm, Some(Confirm::Restart));
     app.on_key(key('x'));
@@ -165,20 +165,20 @@ fn run_all_follows_the_running_cell_until_manual_movement() {
     }
     app.rendered.rebuild_all(&app.notebook);
     let start = |app: &mut App, id: &str, idx: usize| {
-        app.running.insert(id.into(), idx);
+        app.exec.running.insert(id.into(), idx);
         app.apply_kernel_event(Event::ExecutionCount { parent: id.into(), count: 1 });
     };
-    app.follow = true; // as run_range(0..3) sets it
+    app.exec.follow = true; // as run_range(0..3) sets it
     start(&mut app, "m1", 1);
     assert_eq!(app.selected, 1, "selection jumps to the running cell");
     app.on_key(key('k')); // manual movement
-    assert!(!app.follow);
+    assert!(!app.exec.follow);
     start(&mut app, "m2", 2);
     assert_eq!(app.selected, 0, "no more jumping");
     // non-movement keys keep following
-    app.follow = true;
+    app.exec.follow = true;
     app.on_key(key('o'));
-    assert!(app.follow);
+    assert!(app.exec.follow);
 }
 
 #[test]
@@ -192,7 +192,7 @@ fn space_runs_x_runs_all_ctrl_r_redoes() {
     app.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
     assert_eq!(app.notebook.cells.len(), 2, "Ctrl+r redoes");
     app.on_key(key('X'));
-    assert!(app.follow, "run all follows");
+    assert!(app.exec.follow, "run all follows");
 }
 
 #[test]
@@ -229,7 +229,7 @@ fn py_notebooks_keep_outputs_in_memory_only() {
     app.rendered = Rendered::build(&app.notebook, None, Default::default());
     assert_eq!(sources(&app), ["x = 1", "hi"]);
     assert!(!app.stores_outputs());
-    app.running.insert("m".into(), 0);
+    app.exec.running.insert("m".into(), 0);
     app.apply_kernel_event(Event::Output { parent: "m".into(), output: stream("out\n") });
     app.apply_kernel_event(Event::ExecutionCount { parent: "m".into(), count: 3 });
     assert!(!app.dirty, "outputs can't be saved to a .py");
@@ -284,23 +284,23 @@ fn execution_ends_on_reply_and_idle_in_either_order() {
         (Event::Status { parent: "m".into(), busy: false }, Event::Done { parent: "m".into() }),
     ] {
         app.notebook.cells[0].outputs = Some(Vec::new());
-        app.running.insert("m".into(), 0);
+        app.exec.running.insert("m".into(), 0);
         app.apply_kernel_event(first);
         // output racing the reply (separate sockets) still lands
         app.apply_kernel_event(Event::Output { parent: "m".into(), output: stream("late\n") });
         assert_eq!(app.notebook.cells[0].outputs.as_ref().unwrap().len(), 1);
         app.apply_kernel_event(second);
-        assert!(app.running.is_empty() && app.half_done.is_empty());
+        assert!(app.exec.running.is_empty() && app.exec.half_done.is_empty());
     }
     // idle of a request we never sent (kernel_info) is ignored
     app.apply_kernel_event(Event::Status { parent: "other".into(), busy: false });
-    assert!(app.half_done.is_empty());
+    assert!(app.exec.half_done.is_empty());
 }
 
 #[test]
 fn non_code_cells_never_receive_kernel_output() {
     let mut app = one_cell_app("toggle");
-    app.running.insert("m".into(), 0);
+    app.exec.running.insert("m".into(), 0);
     app.toggle_type(); // code -> markdown mid-run
     app.apply_kernel_event(Event::ExecutionCount { parent: "m".into(), count: 3 });
     app.apply_kernel_event(Event::Output { parent: "m".into(), output: stream("x\n") });
@@ -326,9 +326,9 @@ fn wheel_gesture_latches_to_its_initial_target() {
     app.rendered = Rendered::build(&app.notebook, None, Default::default());
     // fake a draw: row 0 is the prompt, rows 1.. are the output viewport
     app.rendered.relayout(80, &app.notebook);
-    app.body = Rect::new(0, 0, 80, 30);
-    app.content_lines = 100;
-    app.hit = (0..30)
+    app.view.body = Rect::new(0, 0, 80, 30);
+    app.view.content_lines = 100;
+    app.view.hit = (0..30)
         .map(|r| Hit { cell: 0, kind: if r == 0 { HitKind::Other } else { HitKind::Output } })
         .collect();
     assert!(app.rendered.blocks[0].output_scrollable());
@@ -342,19 +342,19 @@ fn wheel_gesture_latches_to_its_initial_target() {
     // gesture starts over the prompt -> view; output sliding under the
     // pointer mid-gesture must NOT capture it
     app.on_mouse(wheel(0, false));
-    let after_first = app.scroll;
+    let after_first = app.view.scroll;
     assert!(after_first > 0, "view scrolled");
     let out_pos = app.rendered.blocks[0].win_start();
     app.on_mouse(wheel(5, false)); // now over the output
-    assert!(app.scroll > after_first, "gesture stays with the view");
+    assert!(app.view.scroll > after_first, "gesture stays with the view");
     assert_eq!(app.rendered.blocks[0].win_start(), out_pos, "output untouched");
 
     // after a pause, a gesture starting over the output scrolls the output
-    app.wheel_latch = None; // simulate the pause
-    let view_pos = app.scroll;
+    app.view.wheel_latch = None; // simulate the pause
+    let view_pos = app.view.scroll;
     app.on_mouse(wheel(5, true));
     assert!(app.rendered.blocks[0].win_start() < out_pos, "output scrolled");
-    assert_eq!(app.scroll, view_pos, "view untouched");
+    assert_eq!(app.view.scroll, view_pos, "view untouched");
 }
 
 /// `:w` in the cell editor commits the cell and saves the file; after an

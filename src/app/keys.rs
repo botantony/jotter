@@ -25,7 +25,7 @@ impl App {
         let before = self.selected;
         let action = self.on_key_inner(key);
         if self.selected != before {
-            self.follow = false; // manual movement ends run-all following
+            self.exec.follow = false; // manual movement ends run-all following
         }
         action
     }
@@ -51,10 +51,10 @@ impl App {
 
     fn on_key_inner(&mut self, key: KeyEvent) -> Action {
         self.message = None;
-        self.manual_scroll = false; // keyboard nav re-follows the selection
+        self.view.manual_scroll = false; // keyboard nav re-follows the selection
         // scroll keys move through an overlay; anything else closes it
         // (the draw clamps the positions)
-        let scroll = scroll_key(key, (self.body.height as usize / 2).max(1));
+        let scroll = scroll_key(key, (self.view.body.height as usize / 2).max(1));
         if let Some(overlay) = &mut self.overlay {
             let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
             // false: the key was not for the overlay, so it closes
@@ -405,15 +405,15 @@ impl App {
                 }
                 None => self.message = Some(format!("mark {c} not set")),
             },
-            (Some('z'), KeyCode::Char('t')) => self.align = Some(Align::Top),
-            (Some('z'), KeyCode::Char('z')) => self.align = Some(Align::Middle),
-            (Some('z'), KeyCode::Char('b')) => self.align = Some(Align::Bottom),
+            (Some('z'), KeyCode::Char('t')) => self.view.align = Some(Align::Top),
+            (Some('z'), KeyCode::Char('z')) => self.view.align = Some(Align::Middle),
+            (Some('z'), KeyCode::Char('b')) => self.view.align = Some(Align::Bottom),
             (Some('z'), KeyCode::Char('i')) => {
                 self.overlay = self
                     .notebook
                     .cells
                     .get(self.selected)
-                    .and_then(|c| self.rendered.zoom_image(c, self.body))
+                    .and_then(|c| self.rendered.zoom_image(c, self.view.body))
                     .map(Overlay::Zoom);
                 self.message = Some(match self.overlay {
                     Some(_) => "zoom — any key closes".into(),
@@ -548,13 +548,13 @@ impl App {
                 KeyCode::Char('\'') => self.pending = Some('\''),
                 KeyCode::Char('`') => self.pending = Some('`'),
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if let Some(k) = &self.kernel {
+                    if let Some(k) = &self.exec.kernel {
                         k.interrupt();
                         self.message = Some("interrupt sent".into());
                     }
                 }
                 // a live kernel holds state worth a confirmation; a dead one not
-                KeyCode::Char('R') if self.kernel.is_none() && !self.kernel_starting => {
+                KeyCode::Char('R') if self.exec.kernel.is_none() && !self.exec.kernel_starting => {
                     self.restart_kernel(false)
                 }
                 KeyCode::Char('R') => self.confirm = Some(Confirm::Restart),
