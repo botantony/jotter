@@ -2,6 +2,24 @@
 
 use super::*;
 
+/// Rows a key scrolls an overlay down by (negative: up; `g`/`G` saturate to
+/// the ends), or None if it isn't a scroll key.
+fn scroll_key(key: KeyEvent, page: usize) -> Option<isize> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let page = page as isize;
+    Some(match key.code {
+        KeyCode::Char('j') | KeyCode::Down => 1,
+        KeyCode::Char('k') | KeyCode::Up => -1,
+        KeyCode::Char('d') if ctrl => page,
+        KeyCode::Char('u') if ctrl => -page,
+        KeyCode::PageDown | KeyCode::Char(' ') => page,
+        KeyCode::PageUp => -page,
+        KeyCode::Char('g') | KeyCode::Home => isize::MIN,
+        KeyCode::Char('G') | KeyCode::End => isize::MAX,
+        _ => return None,
+    })
+}
+
 impl App {
     pub fn on_key(&mut self, key: KeyEvent, rendered: &mut Rendered) -> Action {
         let before = self.selected;
@@ -34,42 +52,25 @@ impl App {
     fn on_key_inner(&mut self, key: KeyEvent, rendered: &mut Rendered) -> Action {
         self.message = None;
         self.manual_scroll = false; // keyboard nav re-follows the selection
+        // scroll keys move through an overlay; anything else closes it
+        // (the draw clamps the positions)
+        let scroll = scroll_key(key, (self.body.height as usize / 2).max(1));
         if let Some(up) = &mut self.logs {
-            // scroll keys move through the log; anything else closes it
-            // (draw clamps `up` to the entry count)
-            let page = (self.body.height as usize / 2).max(1);
-            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-            match key.code {
-                KeyCode::Char('k') | KeyCode::Up => *up += 1,
-                KeyCode::Char('j') | KeyCode::Down => *up = up.saturating_sub(1),
-                KeyCode::Char('u') if ctrl => *up += page,
-                KeyCode::Char('d') if ctrl => *up = up.saturating_sub(page),
-                KeyCode::PageUp => *up += page,
-                KeyCode::PageDown => *up = up.saturating_sub(page),
-                KeyCode::Char('g') | KeyCode::Home => *up = usize::MAX,
-                KeyCode::Char('G') | KeyCode::End => *up = 0,
-                _ => self.logs = None,
+            match scroll {
+                Some(d) => *up = up.saturating_add_signed(d.saturating_neg()), /* rows up from
+                                                                                 * the newest */
+                None => self.logs = None,
             }
             return Action::None;
         }
         if let Some(pager) = &mut self.pager {
-            let page = (self.body.height as usize / 2).max(1);
-            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-            match key.code {
-                KeyCode::Char('j') | KeyCode::Down => pager.top += 1,
-                KeyCode::Char('k') | KeyCode::Up => pager.top = pager.top.saturating_sub(1),
-                KeyCode::Char('d') if ctrl => pager.top += page,
-                KeyCode::Char('u') if ctrl => pager.top = pager.top.saturating_sub(page),
-                KeyCode::PageDown | KeyCode::Char(' ') => pager.top += page,
-                KeyCode::PageUp => pager.top = pager.top.saturating_sub(page),
-                KeyCode::Char('g') | KeyCode::Home => pager.top = 0,
-                KeyCode::Char('G') | KeyCode::End => pager.top = usize::MAX,
-                _ => self.pager = None,
+            match scroll {
+                Some(d) => pager.top = pager.top.saturating_add_signed(d),
+                None => self.pager = None,
             }
             return Action::None;
         }
         if let Some(help) = &mut self.help {
-            let page = (self.body.height as usize / 2).max(1);
             let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
             match key.code {
                 // `/`: type a filter; Enter keeps it, Esc drops it
@@ -85,15 +86,10 @@ impl App {
                     help.top = 0;
                 }
                 KeyCode::Char('/') => help.typing = true,
-                KeyCode::Char('j') | KeyCode::Down => help.top += 1,
-                KeyCode::Char('k') | KeyCode::Up => help.top = help.top.saturating_sub(1),
-                KeyCode::Char('d') if ctrl => help.top += page,
-                KeyCode::Char('u') if ctrl => help.top = help.top.saturating_sub(page),
-                KeyCode::PageDown | KeyCode::Char(' ') => help.top += page,
-                KeyCode::PageUp => help.top = help.top.saturating_sub(page),
-                KeyCode::Char('g') | KeyCode::Home => help.top = 0,
-                KeyCode::Char('G') | KeyCode::End => help.top = usize::MAX,
-                _ => self.help = None,
+                _ => match scroll {
+                    Some(d) => help.top = help.top.saturating_add_signed(d),
+                    None => self.help = None,
+                },
             }
             return Action::None;
         }
