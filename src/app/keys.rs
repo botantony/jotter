@@ -57,8 +57,8 @@ impl App {
         let scroll = scroll_key(key, (self.body.height as usize / 2).max(1));
         if let Some(up) = &mut self.logs {
             match scroll {
-                Some(d) => *up = up.saturating_add_signed(d.saturating_neg()), /* rows up from
-                                                                                 * the newest */
+                Some(d) => *up = up.saturating_add_signed(d.saturating_neg()), /* rows up from */
+                // the newest
                 None => self.logs = None,
             }
             return Action::None;
@@ -331,9 +331,9 @@ impl App {
         if self.visual.is_some()
             && self.pending.is_none()
             && self.count.is_none()
-            && self.on_key_visual(key, rendered)
+            && let Some(action) = self.on_key_visual(key, rendered)
         {
-            return Action::None;
+            return action;
         }
         let action = self.on_key_normal(key, rendered);
         // motions extend a visual selection; anything else ends it
@@ -352,30 +352,31 @@ impl App {
         action
     }
 
-    /// Operators on a `V` selection. False: not one, handle the key normally.
-    fn on_key_visual(&mut self, key: KeyEvent, rendered: &mut Rendered) -> bool {
+    /// Operators on a `V` selection. None: not one, handle the key normally.
+    fn on_key_visual(&mut self, key: KeyEvent, rendered: &mut Rendered) -> Option<Action> {
         let r = self.sel_range();
+        let mut action = Action::None;
         match key.code {
             KeyCode::Esc | KeyCode::Char('V') => {}
             KeyCode::Char('d' | 'x') => self.delete_cells(r, rendered),
-            KeyCode::Char('y') => self.yank_cells(r),
+            KeyCode::Char('y') => action = self.yank_cells(r),
             // the selection moves along, so J/K repeat
             KeyCode::Char('J') => {
                 self.move_cells(r, 1, rendered);
-                return true;
+                return Some(Action::None);
             }
             KeyCode::Char('K') => {
                 self.move_cells(r, -1, rendered);
-                return true;
+                return Some(Action::None);
             }
             KeyCode::Char('r' | ' ') | KeyCode::Enter => self.run_range(r, rendered),
             KeyCode::Char('c') if key.modifiers.is_empty() => self.clear_outputs(r, rendered),
             KeyCode::Char('f') => self.message = Some(self.format_cells(r, rendered)),
             KeyCode::Char('M') => self.merge_cells(r, rendered),
-            _ => return false,
+            _ => return None,
         }
         self.visual = None;
-        true
+        Some(action)
     }
 
     fn on_key_normal(&mut self, key: KeyEvent, rendered: &mut Rendered) -> Action {
@@ -387,7 +388,9 @@ impl App {
             (Some('d'), KeyCode::Char('d')) => {
                 self.delete_cells(self.selected..self.selected + 1, rendered)
             }
-            (Some('y'), KeyCode::Char('y')) => self.yank_cells(self.selected..self.selected + 1),
+            (Some('y'), KeyCode::Char('y')) => {
+                return self.yank_cells(self.selected..self.selected + 1);
+            }
             (Some('m'), KeyCode::Char(c)) if c.is_ascii_lowercase() => {
                 if let Some(id) = self.selected_id() {
                     self.marks.insert(c, id);
@@ -563,9 +566,9 @@ impl App {
                 KeyCode::Char('D') => {
                     let text = self.debug_report(rendered);
                     log::info!(target: "debug", "{}", text.replace('\n', " | "));
-                    osc52(&text);
-                    self.debug = Some(text);
+                    self.debug = Some(text.clone());
                     self.message = Some("debug info copied to clipboard".into());
+                    return Action::Copy(text);
                 }
                 KeyCode::Char('z') => self.pending = Some('z'),
                 KeyCode::Char('Z') => {

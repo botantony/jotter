@@ -56,6 +56,17 @@ struct Args {
     generate: Option<PathBuf>,
 }
 
+/// Copy `text` to the system clipboard via OSC 52 (works over ssh/tmux).
+fn osc52(text: &str) {
+    use std::io::Write;
+
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+    let mut out = std::io::stdout();
+    let _ = write!(out, "\x1b]52;c;{b64}\x07");
+    let _ = out.flush();
+}
+
 /// Physically clear the screen. (`Terminal::clear` would also query the
 /// cursor position, which fails on terminals that don't answer DSR.)
 fn clear_screen() {
@@ -255,9 +266,13 @@ async fn run(
                 // resolve against the last frame.
                 loop {
                     let is_key = matches!(event, Event::Key(_) | Event::Paste(_));
-                    if let Action::ExternalEdit = on_term_event(app, rendered, event) {
-                        external_edit(terminal, app, rendered, enhanced);
-                        break;
+                    match on_term_event(app, rendered, event) {
+                        Action::None => {}
+                        Action::ExternalEdit => {
+                            external_edit(terminal, app, rendered, enhanced);
+                            break;
+                        }
+                        Action::Copy(text) => osc52(&text),
                     }
                     if !is_key || app.should_quit || !crossterm::event::poll(std::time::Duration::ZERO)? {
                         break;

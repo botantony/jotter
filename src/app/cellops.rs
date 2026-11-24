@@ -386,17 +386,18 @@ impl App {
     }
 
     /// `yy`, or `y` on a `V` selection: the cells into the paste register
-    /// (`p`) and their sources onto the system clipboard via OSC 52.
-    pub(super) fn yank_cells(&mut self, r: std::ops::Range<usize>) {
+    /// (`p`) and their sources onto the system clipboard.
+    pub(super) fn yank_cells(&mut self, r: std::ops::Range<usize>) -> Action {
         let Some(cells) = self.notebook.cells.get(r) else {
-            return;
+            return Action::None;
         };
-        osc52(&cells.iter().map(|c| c.source.as_str()).collect::<Vec<_>>().join("\n\n"));
+        let sources = cells.iter().map(|c| c.source.as_str()).collect::<Vec<_>>().join("\n\n");
         self.yanked = cells.to_vec();
         self.message = Some(match cells.len() {
             1 => "cell yanked (p pastes) · source on the clipboard".into(),
             n => format!("{n} cells yanked (p pastes) · sources on the clipboard"),
         });
+        Action::Copy(sources)
     }
 }
 

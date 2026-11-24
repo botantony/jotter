@@ -171,6 +171,8 @@ pub enum Action {
     None,
     /// Suspend the TUI and open the selected cell in $EDITOR.
     ExternalEdit,
+    /// Copy this text to the system clipboard.
+    Copy(String),
 }
 
 pub struct App {
@@ -279,20 +281,6 @@ pub struct App {
     /// Wheel-gesture latch: ticks in one burst keep their initial target even
     /// as content moves under the pointer.
     wheel_latch: Option<(Instant, WheelTarget)>,
-}
-
-/// Copy `text` to the system clipboard via OSC 52 (works over ssh/tmux).
-fn osc52(text: &str) {
-    if cfg!(test) {
-        return; // keep escape sequences out of test output
-    }
-    use std::io::Write;
-
-    use base64::Engine;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
-    let mut out = std::io::stdout();
-    let _ = write!(out, "\x1b]52;c;{b64}\x07");
-    let _ = out.flush();
 }
 
 /// Jump list depth (vim's is 100).
