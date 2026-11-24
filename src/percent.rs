@@ -1181,10 +1181,11 @@ mod tests {
         // a whitespace-only line before a marker: jupytext < 1.19 drops it,
         // 1.19 keeps it as content (#1599), as we do
         deviations.retain(|d| d.0 != "whitespace");
+        // bare keys: we write them last so they read back as keys. jupytext up
+        // to 1.19.0 writes them in dict order (and then reads them as title
+        // words); 1.19.7 writes them last too
+        deviations.retain(|d| *d != ("options", "write"));
         let mut expected = vec![
-            // bare keys: we write them last so they read back as keys; jupytext
-            // writes them in dict order, and then reads them as title words
-            ("options", "write"),
             // a lone code cell without a header is a plain script and gets no
             // marker; jupytext always writes one
             ("plain", "write"),

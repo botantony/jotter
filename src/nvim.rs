@@ -812,7 +812,8 @@ mod tests {
         let session = NvimSession::spawn(false).expect("spawn nvim");
         let mut c = NvimCell::open(session, "busy", "keep me", "").expect("open");
         let t0 = Instant::now();
-        let err = c.feed(":call system('sleep 0.7')<CR>").unwrap_err();
+        // sh, not $SHELL: `sleep 0.7` is an error in nushell and returns at once
+        let err = c.feed(":set shell=sh | call system('sleep 0.7')<CR>").unwrap_err();
         assert!(is_busy(&err), "not reported as busy: {err:#}");
         assert!(t0.elapsed() < Duration::from_secs(2), "gave up within the budgets");
         std::thread::sleep(Duration::from_millis(800));
