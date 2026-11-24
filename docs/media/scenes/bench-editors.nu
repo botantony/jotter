@@ -40,8 +40,8 @@ sleep 500ms
 # the notebooks: the showcase, and five showcases in a row (70 cells)
 # (Python's json: nushell's `to json` leaves the ANSI escapes in saved
 # tracebacks unescaped, which isn't valid JSON)
-cp ($repo | path join showcase.ipynb) ($work | path join bench-14.ipynb)
-^python3 -c "import json,sys; nb=json.load(open(sys.argv[1])); nb['cells']*=5; json.dump(nb, open(sys.argv[2],'w'), indent=1)" ($repo | path join showcase.ipynb) ($work | path join bench-70.ipynb)
+cp ($repo | path join examples showcase.ipynb) ($work | path join bench-14.ipynb)
+^python3 -c "import json,sys; nb=json.load(open(sys.argv[1])); nb['cells']*=5; json.dump(nb, open(sys.argv[2],'w'), indent=1)" ($repo | path join examples showcase.ipynb) ($work | path join bench-70.ipynb)
 
 def --wrapped rc [...args: string] { ^kitty @ --to $env.JREC_KITTY ...$args }
 # timing loops over kitty's socket: shown, settled, per-key, burst

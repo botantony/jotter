@@ -748,7 +748,8 @@ fn markdown_renders_rich() {
 fn sweeping_a_notebook_renders_each_cell_once() {
     use std::sync::atomic::Ordering::Relaxed;
     let src =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/showcase.ipynb")).unwrap();
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/showcase.ipynb"))
+            .unwrap();
     let mut nb: serde_json::Value = serde_json::from_str(&src).unwrap();
     let cells = nb["cells"].as_array().unwrap().clone();
     nb["cells"] = serde_json::Value::Array((0..5).flat_map(|_| cells.clone()).collect());
