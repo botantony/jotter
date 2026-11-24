@@ -96,6 +96,11 @@ impl Rendered {
         r
     }
 
+    /// The terminal's graphics, once it has been asked (None: no images).
+    pub fn set_picker(&mut self, picker: Option<Picker>) {
+        self.picker = picker;
+    }
+
     /// Lay every block out for `width`: rendered blocks rewrap, the rest get
     /// measured by a layout pass. Only blocks laid out for another width do
     /// work, so steady-state frames pay nothing.

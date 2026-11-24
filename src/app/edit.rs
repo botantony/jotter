@@ -4,9 +4,9 @@ use super::*;
 
 impl App {
     /// Close the cell editor: commit its text, or (`discard`) drop the edit.
-    pub(super) fn leave_editor(&mut self, discard: bool, rendered: &mut Rendered) {
+    pub(super) fn leave_editor(&mut self, discard: bool) {
         if !discard {
-            self.commit_editor(rendered);
+            self.commit_editor();
             return;
         }
         // no commit; reclaim the nvim session, its buffer resyncs on reopen
@@ -18,7 +18,7 @@ impl App {
         self.message = Some("cell edit discarded".into());
     }
 
-    pub(super) fn on_key_edit(&mut self, key: KeyEvent, rendered: &mut Rendered) {
+    pub(super) fn on_key_edit(&mut self, key: KeyEvent) {
         if self.on_key_completion(key) {
             return;
         }
@@ -28,7 +28,7 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('k' | '\\' | '4'))
         {
-            self.split_cell(rendered);
+            self.split_cell();
             if key.code != KeyCode::Char('k') {
                 self.message = Some("Ctrl+\\ goes away in 0.8.0 — Ctrl+k splits the cell".into());
             }
@@ -57,7 +57,7 @@ impl App {
         let outcome = match editor.input(key) {
             Ok(outcome) => outcome,
             Err(e) => {
-                self.nvim_failed(e, rendered);
+                self.nvim_failed(e);
                 return;
             }
         };
@@ -70,21 +70,21 @@ impl App {
             && let Some(force) = editor.take_write_request()
         {
             let source = editor.source();
-            self.write_from_editor(source, force, rendered);
+            self.write_from_editor(source, force);
         }
         // :q/:wq/ZZ/... inside nvim: leave the cell instead of exiting nvim
         if let Some(editor) = &mut self.editor
             && let Some(discard) = editor.take_quit_request()
         {
-            self.leave_editor(discard, rendered); // :q!/ZQ discard
+            self.leave_editor(discard); // :q!/ZQ discard
             return;
         }
         match outcome {
             Outcome::Continue => {}
-            Outcome::Exit => self.commit_editor(rendered),
+            Outcome::Exit => self.commit_editor(),
             Outcome::Run { advance } => {
-                self.commit_editor(rendered);
-                self.run_cell(self.selected, rendered);
+                self.commit_editor();
+                self.run_cell(self.selected);
                 if advance {
                     self.selected =
                         (self.selected + 1).min(self.notebook.cells.len().saturating_sub(1));
@@ -96,7 +96,7 @@ impl App {
     /// An nvim request failed. A late reply keeps the session: the key is
     /// queued in nvim and the next key reads the state back. Anything else
     /// means the child is gone: salvage the text into the builtin editor.
-    pub(super) fn nvim_failed(&mut self, e: anyhow::Error, rendered: &mut Rendered) {
+    pub(super) fn nvim_failed(&mut self, e: anyhow::Error) {
         if crate::nvim::is_busy(&e) {
             self.message =
                 Some("nvim is busy — keys are queued, the cell refreshes with the next one".into());
@@ -107,13 +107,13 @@ impl App {
         };
         let source = editor.source();
         if let Some(force) = editor.take_write_request() {
-            self.write_from_editor(source.clone(), force, rendered); // honor a final :wq
+            self.write_from_editor(source.clone(), force); // honor a final :wq
         }
         self.editor = Some(Backend::Builtin(Editor::new(&source)));
         self.message = Some(format!("nvim backend lost ({e:#}) — builtin editor"));
     }
 
-    pub(super) fn commit_editor(&mut self, rendered: &mut Rendered) {
+    pub(super) fn commit_editor(&mut self) {
         self.signature = None;
         let Some(editor) = self.editor.take() else {
             return;
@@ -122,17 +122,17 @@ impl App {
         if let Some(session) = editor.into_session() {
             self.nvim = Some(session); // per-cell buffers survive across edits
         }
-        self.update_cell_source(source, rendered);
+        self.update_cell_source(source);
     }
 
     /// Write `source` into the selected cell (undo-tracked, re-rendered);
     /// editor state untouched.
-    pub(super) fn update_cell_source(&mut self, source: String, rendered: &mut Rendered) {
+    pub(super) fn update_cell_source(&mut self, source: String) {
         let Some(cell) = self.notebook.cells.get_mut(self.selected) else {
             return;
         };
         if source != cell.source {
-            self.record(CellOp::SetSource(self.selected, source), rendered);
+            self.record(CellOp::SetSource(self.selected, source));
         }
     }
 
@@ -216,9 +216,9 @@ impl App {
     }
 
     /// Called by main after $EDITOR closed; applies the edited source.
-    pub fn apply_external_edit(&mut self, source: String, rendered: &mut Rendered) {
+    pub fn apply_external_edit(&mut self, source: String) {
         // editors write a trailing newline; cell sources don't carry one
         let source = source.strip_suffix('\n').unwrap_or(&source).to_string();
-        self.update_cell_source(source, rendered);
+        self.update_cell_source(source);
     }
 }

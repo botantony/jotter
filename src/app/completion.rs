@@ -594,7 +594,7 @@ mod tests {
 
     #[test]
     fn completion_applies_single_match_filters_while_typing_and_goes_stale() {
-        let (mut app, mut r) = one_cell_app("comp");
+        let mut app = one_cell_app("comp");
         app.notebook.cells[0].source = "pr".into();
         app.open_editor(false);
         app.editor.as_mut().unwrap().append_end();
@@ -616,29 +616,31 @@ mod tests {
                 detail_reqs: HashMap::new(),
             });
         };
-        let reply = |app: &mut App, r: &mut Rendered, id: &str, m: &[&str]| {
+        let reply = |app: &mut App, id: &str, m: &[&str]| {
             let matches = m.iter().map(|s| s.to_string()).collect();
-            app.apply_kernel_event(
-                Event::Complete { parent: id.into(), matches, start: 0, types: HashMap::new() },
-                r,
-            );
+            app.apply_kernel_event(Event::Complete {
+                parent: id.into(),
+                matches,
+                start: 0,
+                types: HashMap::new(),
+            });
         };
         let src = |app: &App| app.editor.as_ref().unwrap().source();
         // several (deduplicated) matches open the popup
         pending(&mut app, "q1");
-        reply(&mut app, &mut r, "q1", &["print", "property", "print", "pow"]);
+        reply(&mut app, "q1", &["print", "property", "print", "pow"]);
         assert_eq!(labels(&app), ["print", "property"]);
         // typing keeps it open and filters; Enter accepts over what was typed
-        app.on_key(key('o'), &mut r);
+        app.on_key(key('o'));
         assert_eq!(src(&app), "pro");
         assert_eq!(labels(&app), ["property"]);
-        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut r);
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(src(&app), "property");
         assert!(app.completion.is_none());
         // typing past every match closes it; a non-name key closes it too
         pending(&mut app, "q2");
-        reply(&mut app, &mut r, "q2", &["property", "props"]);
-        app.on_key(key('('), &mut r);
+        reply(&mut app, "q2", &["property", "props"]);
+        app.on_key(key('('));
         assert!(app.completion.is_none());
         // an explicit request with one match applies directly
         app.editor = None;
@@ -648,19 +650,19 @@ mod tests {
         pending(&mut app, "q3");
         let c = app.completion.as_mut().unwrap();
         (c.start, c.at) = (3, 3);
-        reply(&mut app, &mut r, "q3", &["print"]);
+        reply(&mut app, "q3", &["print"]);
         assert_eq!(src(&app), "print");
         // a reply whose text before the token changed is dropped
         pending(&mut app, "q4");
         app.completion.as_mut().unwrap().source = "zzzzz".into();
-        reply(&mut app, &mut r, "q4", &["pxxxx"]);
+        reply(&mut app, "q4", &["pxxxx"]);
         assert_eq!(src(&app), "print");
         assert!(app.completion.is_none());
     }
 
     #[test]
     fn empty_replies_close_and_notebook_names_complete_before_they_run() {
-        let (mut app, mut r) = one_cell_app("words");
+        let mut app = one_cell_app("words");
         let open = |app: &mut App, src: &str| {
             app.editor = None;
             app.notebook.cells[0].source = src.into();
@@ -685,28 +687,30 @@ mod tests {
             });
             at
         };
-        let reply = |app: &mut App, r: &mut Rendered, m: &[&str], start: usize| {
+        let reply = |app: &mut App, m: &[&str], start: usize| {
             let matches = m.iter().map(|s| s.to_string()).collect();
-            app.apply_kernel_event(
-                Event::Complete { parent: "q".into(), matches, start, types: HashMap::new() },
-                r,
-            );
+            app.apply_kernel_event(Event::Complete {
+                parent: "q".into(),
+                matches,
+                start,
+                types: HashMap::new(),
+            });
         };
         // nothing anywhere: closes with a message (was: "completing…" forever)
         let at = open(&mut app, "zq.");
         app.message = Some("completing…".into());
-        reply(&mut app, &mut r, &[], at);
+        reply(&mut app, &[], at);
         assert!(app.completion.is_none());
         assert_eq!(app.message.as_deref(), Some("no completions"));
         // unexecuted import: notebook names first, then the kernel's
         let at = open(&mut app, "import numpy as np\nn");
-        reply(&mut app, &mut r, &["next", "not"], at - 1);
+        reply(&mut app, &["next", "not"], at - 1);
         assert_eq!(labels(&app), ["np", "numpy", "next", "not"], "nearest name first");
         // words in strings and comments are not names
         assert_eq!(identifiers("x = 'never mind'  # nope\nyes_1 = \"a\\\"b\""), ["yes_1"]);
         // even when the kernel knows nothing, notebook names still come
         let at = open(&mut app, "value_1 = 3\nval");
-        reply(&mut app, &mut r, &[], at);
+        reply(&mut app, &[], at);
         assert_eq!(
             app.editor.as_ref().unwrap().source(),
             "value_1 = 3\nvalue_1",
@@ -714,7 +718,7 @@ mod tests {
         );
         // attribute access: no notebook words mixed in
         let at = open(&mut app, "np.n");
-        reply(&mut app, &mut r, &[], at);
+        reply(&mut app, &[], at);
         assert!(app.completion.is_none());
     }
 
@@ -735,7 +739,7 @@ mod tests {
 
     #[test]
     fn shift_tab_in_the_popup_cycles_backwards_and_details_fill_in_lazily() {
-        let (mut app, mut r) = one_cell_app("docs");
+        let mut app = one_cell_app("docs");
         app.notebook.cells[0].source = "np.".into();
         app.open_editor(false);
         app.editor.as_mut().unwrap().append_end();
@@ -757,39 +761,33 @@ mod tests {
         });
         let types =
             HashMap::from([(".linspace".to_string(), ("attribute".to_string(), String::new()))]);
-        app.apply_kernel_event(
-            Event::Complete {
-                parent: "q".into(),
-                matches: vec![".linalg".into(), ".linspace".into()],
-                start: 2,
-                types,
-            },
-            &mut r,
-        );
+        app.apply_kernel_event(Event::Complete {
+            parent: "q".into(),
+            matches: vec![".linalg".into(), ".linspace".into()],
+            start: 2,
+            types,
+        });
         assert_eq!(labels(&app), ["linalg", "linspace"], "shown without the dot");
         // Shift+Tab: previous candidate, wrapping; never docs while the popup is open
         let back_tab = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
-        app.on_key(back_tab, &mut r);
+        app.on_key(back_tab);
         assert_eq!(app.completion.as_ref().unwrap().sel, 1, "wraps from the first to the last");
-        app.on_key(back_tab, &mut r);
+        app.on_key(back_tab);
         assert_eq!(app.completion.as_ref().unwrap().sel, 0);
-        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &mut r);
+        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(app.completion.as_ref().unwrap().sel, 1);
         assert_eq!(app.message, None, "no docs request");
         // a detail reply fills kind + signature of that candidate
         app.completion.as_mut().unwrap().detail_reqs.insert("i1".into(), ".linspace".into());
         let doc = "Signature: np.linspace(start, stop)\nType:      function";
-        app.apply_kernel_event(
-            Event::Inspect { parent: "i1".into(), text: Some(doc.into()) },
-            &mut r,
-        );
+        app.apply_kernel_event(Event::Inspect { parent: "i1".into(), text: Some(doc.into()) });
         let item = &app.completion.as_ref().unwrap().items[1];
         assert_eq!((item.kind.as_str(), item.detail.as_str()), ("function", "(start, stop)"));
     }
 
     #[test]
     fn candidate_code_splices_into_the_live_text_and_visible_rows_follow_the_window() {
-        let (mut app, _r) = one_cell_app("splice");
+        let mut app = one_cell_app("splice");
         // request made at "np." — then the user typed "lin"
         app.notebook.cells[0].source = "np.lin\nplt.subplots(figsize=(10, 10))".into();
         app.open_editor(false);

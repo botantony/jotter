@@ -177,6 +177,9 @@ pub enum Action {
 
 pub struct App {
     pub notebook: Notebook,
+    /// What the notebook looks like: the render cache, kept in step with
+    /// `notebook` by every change to it.
+    pub rendered: Rendered,
     /// Empty for a scratchpad (`jotter` without a file); `:w name` names it.
     pub path: PathBuf,
     pub selected: usize,
@@ -305,7 +308,10 @@ impl App {
                     .map(String::from)
             })
             .unwrap_or_else(|| "python3".into());
+        let dir = path.parent().map(PathBuf::from).unwrap_or_default();
         let mut app = Self {
+            // without graphics until the terminal is known (`set_picker`)
+            rendered: Rendered::build(&notebook, None, dir),
             notebook,
             path,
             selected: 0,
@@ -442,7 +448,7 @@ impl App {
 
     /// `D`: everything about the selected cell that helps pin down a bug
     /// report — identity, model, render/viewport state, execution, kernel.
-    fn debug_report(&self, rendered: &Rendered) -> String {
+    fn debug_report(&self) -> String {
         let mut out = format!("jotter {}\n", env!("CARGO_PKG_VERSION"));
         match self.notebook.cells.get(self.selected) {
             Some(cell) => {
@@ -482,7 +488,7 @@ impl App {
                     })
                     .collect();
                 out += &format!("outputs ({}): {}\n", outputs.len(), outputs.join(" · "));
-                if let Some(b) = rendered.blocks.get(self.selected) {
+                if let Some(b) = self.rendered.blocks.get(self.selected) {
                     out += &format!("render: {}\n", b.debug_summary());
                 }
                 let runs: Vec<String> = self
@@ -542,7 +548,7 @@ impl App {
                     e.cursor()
                 ),
             },
-            rendered.graphics_summary(),
+            self.rendered.graphics_summary(),
             if self.keyboard_protocol { "kitty protocol" } else { "legacy (no Shift+Enter)" }
         );
         out.trim_end().to_string()

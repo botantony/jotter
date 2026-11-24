@@ -21,9 +21,9 @@ fn scroll_key(key: KeyEvent, page: usize) -> Option<isize> {
 }
 
 impl App {
-    pub fn on_key(&mut self, key: KeyEvent, rendered: &mut Rendered) -> Action {
+    pub fn on_key(&mut self, key: KeyEvent) -> Action {
         let before = self.selected;
-        let action = self.on_key_inner(key, rendered);
+        let action = self.on_key_inner(key);
         if self.selected != before {
             self.follow = false; // manual movement ends run-all following
         }
@@ -32,7 +32,7 @@ impl App {
 
     /// Bracketed paste, whole: a key per character would run each one as a
     /// command outside the editor, and cost an nvim round trip each inside.
-    pub fn on_paste(&mut self, text: String, rendered: &mut Rendered) {
+    pub fn on_paste(&mut self, text: String) {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         self.message = None;
         if let Some(req) = &mut self.stdin_req {
@@ -42,14 +42,14 @@ impl App {
         } else if let Some(editor) = &mut self.editor {
             self.completion = None;
             if let Err(e) = editor.paste(&text) {
-                self.nvim_failed(e, rendered);
+                self.nvim_failed(e);
             }
         } else {
             self.message = Some("paste ignored outside a cell (i or A edits it)".into());
         }
     }
 
-    fn on_key_inner(&mut self, key: KeyEvent, rendered: &mut Rendered) -> Action {
+    fn on_key_inner(&mut self, key: KeyEvent) -> Action {
         self.message = None;
         self.manual_scroll = false; // keyboard nav re-follows the selection
         // scroll keys move through an overlay; anything else closes it
@@ -107,32 +107,32 @@ impl App {
             return Action::None;
         }
         if self.prompt.is_some() {
-            self.on_key_prompt(key, rendered);
+            self.on_key_prompt(key);
             return Action::None;
         }
         if let Some(confirm) = self.confirm.take() {
-            self.answer(confirm, key, rendered);
+            self.answer(confirm, key);
             return Action::None;
         }
         if self.editor.is_some() {
-            self.on_key_edit(key, rendered);
+            self.on_key_edit(key);
             if self.editor.is_some() {
                 self.after_edit_key(key);
                 self.update_signature(key);
             }
             return Action::None;
         }
-        self.on_key_notebook(key, rendered)
+        self.on_key_notebook(key)
     }
 
     /// The key answering a pending `Confirm` question.
-    fn answer(&mut self, confirm: Confirm, key: KeyEvent, rendered: &mut Rendered) {
+    fn answer(&mut self, confirm: Confirm, key: KeyEvent) {
         let k = key.code;
         match confirm {
             Confirm::Quit => match k {
                 KeyCode::Char('q') => self.discard_quit(),
                 KeyCode::Char('s') | KeyCode::Char('w') => {
-                    if self.save_notebook(false, rendered) {
+                    if self.save_notebook(false) {
                         self.should_quit = true;
                     }
                 }
@@ -140,7 +140,7 @@ impl App {
             },
             Confirm::Reload => {
                 if k == KeyCode::Char('l') {
-                    match self.reload(rendered) {
+                    match self.reload() {
                         Ok(()) => self.message = Some("reloaded from disk".into()),
                         Err(e) => self.message = Some(format!("reload failed: {e:#}")),
                     }
@@ -158,7 +158,7 @@ impl App {
             Confirm::Recover(saved, _) => match k {
                 KeyCode::Char('r') => {
                     self.notebook = *saved;
-                    rendered.rebuild_all(&self.notebook);
+                    self.rendered.rebuild_all(&self.notebook);
                     self.selected = 0;
                     self.undo_stack.clear();
                     self.redo_stack.clear();
@@ -179,7 +179,7 @@ impl App {
     }
 
     /// Keys while a status-line prompt (`/` search, `S` save as) is open.
-    fn on_key_prompt(&mut self, key: KeyEvent, rendered: &mut Rendered) {
+    fn on_key_prompt(&mut self, key: KeyEvent) {
         let Some(prompt) = &mut self.prompt else {
             return;
         };
@@ -202,13 +202,13 @@ impl App {
                         }
                     }
                     PromptKind::SaveAs => {
-                        if self.save_as(&buf, rendered) {
+                        if self.save_as(&buf) {
                             self.prompt = None;
                         }
                     }
                     PromptKind::Command => {
                         self.prompt = None;
-                        self.ex_command(&buf, rendered);
+                        self.ex_command(&buf);
                     }
                 }
             }
@@ -220,7 +220,7 @@ impl App {
     /// backend's: `:w` saves the notebook and keeps editing, `:q` leaves
     /// the cell, `:wq`/`:x` both. In notebook mode `:q` quits and `:5`
     /// selects cell 5.
-    pub(super) fn ex_command(&mut self, cmd: &str, rendered: &mut Rendered) {
+    pub(super) fn ex_command(&mut self, cmd: &str) {
         let cmd = cmd.trim();
         let (name, arg) =
             cmd.split_once(char::is_whitespace).map_or((cmd, ""), |(n, a)| (n, a.trim()));
@@ -229,16 +229,16 @@ impl App {
         match (name, arg) {
             ("", _) => {}
             ("w" | "w!", "") => {
-                self.ex_write(force, rendered);
+                self.ex_write(force);
             }
             ("w" | "w!" | "sav" | "saveas", path) => {
                 if let Some(src) = self.editor.as_ref().map(|e| e.source()) {
-                    self.update_cell_source(src, rendered);
+                    self.update_cell_source(src);
                 }
                 if force {
                     self.overwrite_armed = Some(expand_tilde(path));
                 }
-                if !self.save_as(path, rendered) {
+                if !self.save_as(path) {
                     self.overwrite_armed = None;
                     self.message = Some(format!("{path} exists — :w! {path} overwrites"));
                 }
@@ -253,17 +253,17 @@ impl App {
             ("delm" | "delmarks", letters) if !letters.is_empty() => {
                 self.marks.retain(|c, _| !letters.contains(*c));
             }
-            ("q" | "q!", "") if editing => self.leave_editor(force, rendered),
+            ("q" | "q!", "") if editing => self.leave_editor(force),
             ("q", "") => self.quit(),
             ("q!" | "qa!", "") => self.discard_quit(),
             ("qa", "") => {
-                self.leave_editor(false, rendered);
+                self.leave_editor(false);
                 self.quit();
             }
             ("wq" | "wq!" | "x" | "x!", "") => {
                 // leave first, so format_on_save also formats this cell
-                self.leave_editor(false, rendered);
-                if self.save_notebook(force, rendered) && !editing {
+                self.leave_editor(false);
+                if self.save_notebook(force) && !editing {
                     self.should_quit = true;
                 }
             }
@@ -277,10 +277,10 @@ impl App {
     }
 
     /// `:w`: commit the open cell's text (if any), then save.
-    fn ex_write(&mut self, force: bool, rendered: &mut Rendered) -> bool {
+    fn ex_write(&mut self, force: bool) -> bool {
         match self.editor.as_ref().map(|e| e.source()) {
-            Some(src) => self.write_from_editor(src, force, rendered),
-            None => self.save_notebook(force, rendered),
+            Some(src) => self.write_from_editor(src, force),
+            None => self.save_notebook(force),
         }
     }
 
@@ -327,15 +327,15 @@ impl App {
         self.message = Some(format!("no match: {q}"));
     }
 
-    fn on_key_notebook(&mut self, key: KeyEvent, rendered: &mut Rendered) -> Action {
+    fn on_key_notebook(&mut self, key: KeyEvent) -> Action {
         if self.visual.is_some()
             && self.pending.is_none()
             && self.count.is_none()
-            && let Some(action) = self.on_key_visual(key, rendered)
+            && let Some(action) = self.on_key_visual(key)
         {
             return action;
         }
-        let action = self.on_key_normal(key, rendered);
+        let action = self.on_key_normal(key);
         // motions extend a visual selection; anything else ends it
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let motion = match key.code {
@@ -353,41 +353,39 @@ impl App {
     }
 
     /// Operators on a `V` selection. None: not one, handle the key normally.
-    fn on_key_visual(&mut self, key: KeyEvent, rendered: &mut Rendered) -> Option<Action> {
+    fn on_key_visual(&mut self, key: KeyEvent) -> Option<Action> {
         let r = self.sel_range();
         let mut action = Action::None;
         match key.code {
             KeyCode::Esc | KeyCode::Char('V') => {}
-            KeyCode::Char('d' | 'x') => self.delete_cells(r, rendered),
+            KeyCode::Char('d' | 'x') => self.delete_cells(r),
             KeyCode::Char('y') => action = self.yank_cells(r),
             // the selection moves along, so J/K repeat
             KeyCode::Char('J') => {
-                self.move_cells(r, 1, rendered);
+                self.move_cells(r, 1);
                 return Some(Action::None);
             }
             KeyCode::Char('K') => {
-                self.move_cells(r, -1, rendered);
+                self.move_cells(r, -1);
                 return Some(Action::None);
             }
-            KeyCode::Char('r' | ' ') | KeyCode::Enter => self.run_range(r, rendered),
-            KeyCode::Char('c') if key.modifiers.is_empty() => self.clear_outputs(r, rendered),
-            KeyCode::Char('f') => self.message = Some(self.format_cells(r, rendered)),
-            KeyCode::Char('M') => self.merge_cells(r, rendered),
+            KeyCode::Char('r' | ' ') | KeyCode::Enter => self.run_range(r),
+            KeyCode::Char('c') if key.modifiers.is_empty() => self.clear_outputs(r),
+            KeyCode::Char('f') => self.message = Some(self.format_cells(r)),
+            KeyCode::Char('M') => self.merge_cells(r),
             _ => return None,
         }
         self.visual = None;
         Some(action)
     }
 
-    fn on_key_normal(&mut self, key: KeyEvent, rendered: &mut Rendered) -> Action {
+    fn on_key_normal(&mut self, key: KeyEvent) -> Action {
         let pending = self.pending.take();
         let count = self.count.take();
         let step = count.unwrap_or(1).max(1);
         let last = self.notebook.cells.len().saturating_sub(1);
         match (pending, key.code) {
-            (Some('d'), KeyCode::Char('d')) => {
-                self.delete_cells(self.selected..self.selected + 1, rendered)
-            }
+            (Some('d'), KeyCode::Char('d')) => self.delete_cells(self.selected..self.selected + 1),
             (Some('y'), KeyCode::Char('y')) => {
                 return self.yank_cells(self.selected..self.selected + 1);
             }
@@ -412,7 +410,7 @@ impl App {
                     .notebook
                     .cells
                     .get(self.selected)
-                    .and_then(|c| rendered.zoom_image(c, self.body));
+                    .and_then(|c| self.rendered.zoom_image(c, self.body));
                 self.message = Some(match self.zoom {
                     Some(_) => "zoom — any key closes".into(),
                     None => "no image output in this cell".into(),
@@ -432,17 +430,16 @@ impl App {
                     self.prompt = Some(Prompt { kind: PromptKind::Command, buf: String::new() })
                 }
                 KeyCode::Char('w') => {
-                    self.save_notebook(false, rendered);
+                    self.save_notebook(false);
                 }
                 KeyCode::Char('W') => {
-                    self.save_notebook(true, rendered);
+                    self.save_notebook(true);
                 }
                 KeyCode::Char('f') => {
-                    self.message =
-                        Some(self.format_cells(self.selected..self.selected + 1, rendered))
+                    self.message = Some(self.format_cells(self.selected..self.selected + 1))
                 }
                 KeyCode::Char('F') => {
-                    self.message = Some(self.format_cells(0..self.notebook.cells.len(), rendered))
+                    self.message = Some(self.format_cells(0..self.notebook.cells.len()))
                 }
                 KeyCode::Char('S') => {
                     self.overwrite_armed = None;
@@ -485,38 +482,34 @@ impl App {
                 }
                 KeyCode::Char('n') => self.find(1),
                 KeyCode::Char('N') => self.find(-1),
-                KeyCode::Char('u') => self.undo(rendered),
-                KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.redo(rendered)
-                }
+                KeyCode::Char('u') => self.undo(),
+                KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => self.redo(),
                 KeyCode::Char('c') if key.modifiers.is_empty() => {
-                    self.clear_outputs(self.selected..self.selected + 1, rendered)
+                    self.clear_outputs(self.selected..self.selected + 1)
                 }
-                KeyCode::Char('C') => self.clear_outputs(0..self.notebook.cells.len(), rendered),
-                KeyCode::Char('M') => self.merge_cells(self.selected..self.selected + 2, rendered),
+                KeyCode::Char('C') => self.clear_outputs(0..self.notebook.cells.len()),
+                KeyCode::Char('M') => self.merge_cells(self.selected..self.selected + 2),
                 KeyCode::Char('o') => {
-                    if let Some(b) = rendered.blocks.get_mut(self.selected) {
+                    if let Some(b) = self.rendered.blocks.get_mut(self.selected) {
                         b.collapsed = !b.collapsed;
                     }
                 }
                 KeyCode::Char('[') => {
-                    if let Some(b) = rendered.blocks.get_mut(self.selected) {
+                    if let Some(b) = self.rendered.blocks.get_mut(self.selected) {
                         b.scroll_output(-1);
                     }
                 }
                 KeyCode::Char(']') => {
-                    if let Some(b) = rendered.blocks.get_mut(self.selected) {
+                    if let Some(b) = self.rendered.blocks.get_mut(self.selected) {
                         b.scroll_output(1);
                     }
                 }
                 // run all / all above / selected + below
-                KeyCode::Char('X') => self.run_range(0..self.notebook.cells.len(), rendered),
+                KeyCode::Char('X') => self.run_range(0..self.notebook.cells.len()),
                 // run in place (Ctrl+Enter is the same, where terminals report it)
-                KeyCode::Char(' ') => self.run_cell(self.selected, rendered),
-                KeyCode::Char('<') => self.run_range(0..self.selected, rendered),
-                KeyCode::Char('>') => {
-                    self.run_range(self.selected..self.notebook.cells.len(), rendered)
-                }
+                KeyCode::Char(' ') => self.run_cell(self.selected),
+                KeyCode::Char('<') => self.run_range(0..self.selected),
+                KeyCode::Char('>') => self.run_range(self.selected..self.notebook.cells.len()),
                 // edit
                 KeyCode::Enter if key.modifiers.is_empty() => self.open_editor(false),
                 KeyCode::Char('i') => self.open_editor(true),
@@ -528,25 +521,25 @@ impl App {
                 }
                 // run (Shift+Enter / Ctrl+Enter need the kitty keyboard protocol)
                 KeyCode::Enter | KeyCode::Char('r') => {
-                    self.run_cell(self.selected, rendered);
+                    self.run_cell(self.selected);
                     if key.code == KeyCode::Char('r') || key.modifiers.contains(KeyModifiers::SHIFT)
                     {
                         self.selected = (self.selected + 1).min(last);
                     }
                 }
                 // cell ops
-                KeyCode::Char('a') => self.insert_cell(self.selected + 1, rendered),
-                KeyCode::Char('b') => self.insert_cell(self.selected, rendered),
-                KeyCode::Char('p') => self.paste(self.selected + 1, rendered),
-                KeyCode::Char('P') => self.paste(self.selected, rendered),
+                KeyCode::Char('a') => self.insert_cell(self.selected + 1),
+                KeyCode::Char('b') => self.insert_cell(self.selected),
+                KeyCode::Char('p') => self.paste(self.selected + 1),
+                KeyCode::Char('P') => self.paste(self.selected),
                 KeyCode::Char('V') => self.visual = Some(self.selected),
                 KeyCode::Char('J') => {
-                    self.move_cells(self.selected..self.selected + 1, 1, rendered);
+                    self.move_cells(self.selected..self.selected + 1, 1);
                 }
                 KeyCode::Char('K') => {
-                    self.move_cells(self.selected..self.selected + 1, -1, rendered);
+                    self.move_cells(self.selected..self.selected + 1, -1);
                 }
-                KeyCode::Char('t') => self.toggle_type(rendered),
+                KeyCode::Char('t') => self.toggle_type(),
                 KeyCode::Char('m') => self.pending = Some('m'),
                 KeyCode::Char('\'') => self.pending = Some('\''),
                 KeyCode::Char('`') => self.pending = Some('`'),
@@ -564,7 +557,7 @@ impl App {
                 KeyCode::Char('?') => self.help = Some(Help::default()),
                 KeyCode::Char('L') => self.logs = Some(0),
                 KeyCode::Char('D') => {
-                    let text = self.debug_report(rendered);
+                    let text = self.debug_report();
                     log::info!(target: "debug", "{}", text.replace('\n', " | "));
                     self.debug = Some(text.clone());
                     self.message = Some("debug info copied to clipboard".into());
@@ -573,7 +566,7 @@ impl App {
                 KeyCode::Char('z') => self.pending = Some('z'),
                 KeyCode::Char('Z') => {
                     if let Some(cell) = self.notebook.cells.get(self.selected) {
-                        let native = rendered.toggle_full_images(self.selected, cell);
+                        let native = self.rendered.toggle_full_images(self.selected, cell);
                         self.message = Some(if native {
                             "images at native size — Z restores the cap".into()
                         } else {

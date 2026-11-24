@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn reply_fills_the_popup_or_closes_it() {
-        let (mut app, mut r) = one_cell_app("sig");
+        let mut app = one_cell_app("sig");
         let pending = |app: &mut App, id: &str| {
             app.signature = Some(SigHelp {
                 request: Some(id.into()),
@@ -377,18 +377,15 @@ mod tests {
         };
         pending(&mut app, "q1");
         let doc = "\x1b[31mSignature:\x1b[39m mine(path, kernel=None, *, tx=1)\n\x1b[31mType:\x1b[39m      function";
-        app.apply_kernel_event(
-            Event::Inspect { parent: "q1".into(), text: Some(doc.into()) },
-            &mut r,
-        );
+        app.apply_kernel_event(Event::Inspect { parent: "q1".into(), text: Some(doc.into()) });
         assert_eq!(app.signature.as_ref().unwrap().text, "mine(path, kernel=None, *, tx=1)");
 
         // not a callable (or unknown to the kernel): no popup
         pending(&mut app, "q2");
-        app.apply_kernel_event(
-            Event::Inspect { parent: "q2".into(), text: Some("Type:      int".into()) },
-            &mut r,
-        );
+        app.apply_kernel_event(Event::Inspect {
+            parent: "q2".into(),
+            text: Some("Type:      int".into()),
+        });
         assert!(app.signature.is_none());
     }
 }

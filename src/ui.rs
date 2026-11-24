@@ -200,7 +200,7 @@ impl FrameLayout {
     }
 }
 
-pub fn draw(frame: &mut Frame, app: &mut App, rendered: &mut Rendered) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     // one chokepoint sends every status message to the log (viewer: L)
     if let Some(m) = &app.message
         && app.logged_status.as_ref() != Some(m)
@@ -208,18 +208,18 @@ pub fn draw(frame: &mut Frame, app: &mut App, rendered: &mut Rendered) {
         log::info!(target: "status", "{m}");
         app.logged_status = Some(m.clone());
     }
-    let lay = layout(app, rendered, frame.area());
-    app.hit = paint_cells(frame, app, rendered, &lay);
+    let lay = layout(app, frame.area());
+    app.hit = paint_cells(frame, app, &lay);
     let cursor_at = paint_cursor(frame, app, &lay);
     paint_status(frame, app, lay.status);
-    paint_overlays(frame, app, rendered, &lay, cursor_at);
+    paint_overlays(frame, app, &lay, cursor_at);
 }
 
 /// Everything that decides positions: the areas, the editing cell's live
 /// wrap, each cell's height, and the scroll that keeps the selection on
 /// screen. Renders the cells near the screen, since only that settles their
 /// heights. All of a frame's changes to the view state happen here.
-fn layout(app: &mut App, rendered: &mut Rendered, area: Rect) -> FrameLayout {
+fn layout(app: &mut App, area: Rect) -> FrameLayout {
     let [body, status] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
     // marks sidebar on the right, when there are marks and room for it
     let marks = mark_entries(app);
@@ -230,7 +230,7 @@ fn layout(app: &mut App, rendered: &mut Rendered, area: Rect) -> FrameLayout {
     } else {
         (body, None)
     };
-    rendered.relayout(body.width, &app.notebook);
+    app.rendered.relayout(body.width, &app.notebook);
 
     // The editing cell renders live from the editor buffer: highlighted and
     // wrapped once per frame (one cell; cached blocks rewrap only on resize).
@@ -239,7 +239,7 @@ fn layout(app: &mut App, rendered: &mut Rendered, area: Rect) -> FrameLayout {
     let editor_src = app.editor.as_ref().map(|e| e.source()).unwrap_or_default();
     let editor_wrap = match (&app.editor, app.notebook.cells.get(app.selected)) {
         (Some(ed), Some(cell)) => {
-            let mut logical = rendered.highlight(&editor_src, rendered.cell_lang(cell));
+            let mut logical = app.rendered.highlight(&editor_src, app.rendered.cell_lang(cell));
             logical.resize(ed.line_count().max(1), Line::raw(""));
             // visual-mode selection (nvim backend) overlays the highlighting
             if let Some((kind, anchor, cursor)) = ed.visual() {
@@ -285,18 +285,18 @@ fn layout(app: &mut App, rendered: &mut Rendered, area: Rect) -> FrameLayout {
     // Only cells on or near the screen are rendered; the rest are laid out
     // from row counts (estimated for math). Rendering a cell can change its
     // height, which moves the view, which can bring more cells near: repeat
-    // until the neighbourhood is rendered. Each round renders at least one
+    // until the neighbourhood is app.rendered. Each round renders at least one
     // cell, so this ends.
     let n = app.notebook.cells.len();
     let align = app.align.take();
     loop {
         // prompt + body + separator
-        lay.heights = (0..n).map(|i| 1 + lay.view(rendered, i).body() + 1).collect();
+        lay.heights = (0..n).map(|i| 1 + lay.view(&app.rendered, i).body() + 1).collect();
         // Scroll anchoring: a cell wholly above the view that changed height
         // since it was last laid out (estimate corrected, output grew) moves
         // the view with it, so the content on screen stays put.
         let (mut old_end, mut shift) = (0usize, 0isize);
-        for (b, &h) in rendered.blocks.iter_mut().zip(&lay.heights) {
+        for (b, &h) in app.rendered.blocks.iter_mut().zip(&lay.heights) {
             if let Some(old) = b.last_h.replace(h) {
                 old_end += old;
                 if old_end <= app.scroll {
@@ -350,8 +350,8 @@ fn layout(app: &mut App, rendered: &mut Rendered, area: Rect) -> FrameLayout {
         let mut any = false;
         for i in 0..n {
             if lay.starts[i] < hi && lay.starts[i] + lay.heights[i] > lo {
-                any |= rendered.ensure(i, &app.notebook.cells[i]);
-                rendered.blocks[i].seen = rendered.frame;
+                any |= app.rendered.ensure(i, &app.notebook.cells[i]);
+                app.rendered.blocks[i].seen = app.rendered.frame;
             }
         }
         if !any {
@@ -361,8 +361,8 @@ fn layout(app: &mut App, rendered: &mut Rendered, area: Rect) -> FrameLayout {
     // over the memory budget: drop the least recently seen content (keep the
     // row counts), never the render window
     let (lo, hi) = (app.scroll.saturating_sub(height), app.scroll + 2 * height);
-    rendered.evict(|i| lay.starts[i] < hi && lay.starts[i] + lay.heights[i] > lo);
-    rendered.frame += 1;
+    app.rendered.evict(|i| lay.starts[i] < hi && lay.starts[i] + lay.heights[i] > lo);
+    app.rendered.frame += 1;
     app.content_lines = lay.total;
     app.body = body;
     lay
@@ -370,12 +370,7 @@ fn layout(app: &mut App, rendered: &mut Rendered, area: Rect) -> FrameLayout {
 
 /// The visible rows and their images; returns what each row belongs to
 /// (mouse hits).
-fn paint_cells(
-    frame: &mut Frame,
-    app: &App,
-    rendered: &Rendered,
-    lay: &FrameLayout,
-) -> Vec<crate::app::Hit> {
+fn paint_cells(frame: &mut Frame, app: &App, lay: &FrameLayout) -> Vec<crate::app::Hit> {
     use crate::app::{Hit, HitKind};
     let body = lay.body;
     let height = body.height as usize;
@@ -398,9 +393,9 @@ fn paint_cells(
             ci += 1;
         }
         let cell = &app.notebook.cells[ci];
-        let block = &rendered.blocks[ci];
+        let block = &app.rendered.blocks[ci];
         let editing = lay.editing == Some(ci);
-        let v = lay.view(rendered, ci);
+        let v = lay.view(&app.rendered, ci);
         let local = a - lay.starts[ci];
         let (line, kind) = if local == 0 {
             let run = app
@@ -461,9 +456,9 @@ fn paint_cells(
     // clips rows outside the area it is given: the image was transmitted once,
     // only row-offset placeholders move on scroll. Skipped while the zoom
     // overlay owns the screen.
-    for (i, block) in rendered.blocks.iter().enumerate().filter(|_| app.zoom.is_none()) {
+    for (i, block) in app.rendered.blocks.iter().enumerate().filter(|_| app.zoom.is_none()) {
         let editing = lay.editing == Some(i);
-        let v = lay.view(rendered, i);
+        let v = lay.view(&app.rendered, i);
         for img in &block.images {
             let in_src = img.line < block.src_lines;
             // editing replaces the source region: markdown-math images hide
@@ -601,7 +596,6 @@ fn paint_status(frame: &mut Frame, app: &App, status: Rect) {
 fn paint_overlays(
     frame: &mut Frame,
     app: &mut App,
-    rendered: &Rendered,
     lay: &FrameLayout,
     cursor_at: Option<(u16, u16)>,
 ) {
@@ -628,7 +622,7 @@ fn paint_overlays(
         let typed: String =
             lay.editor_src.chars().skip(start).take(end.saturating_sub(start)).collect();
         let typed_w = typed.trim_start_matches('.').width() as u16;
-        draw_completion(frame, c, at, typed_w, body, &rendered.panel());
+        draw_completion(frame, c, at, typed_w, body, &app.rendered.panel());
     }
     // signature help: under the line, or above it while completion has the
     // space below (nvim-style)
@@ -651,7 +645,7 @@ fn paint_overlays(
         } else {
             0
         };
-        draw_signature(frame, sig, at, back, completion_below, body, &rendered.panel());
+        draw_signature(frame, sig, at, back, completion_below, body, &app.rendered.panel());
     }
     if let Some(help) = &mut app.help {
         draw_help(frame, help);

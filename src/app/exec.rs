@@ -128,10 +128,10 @@ impl App {
         }
     }
 
-    pub(super) fn run_range(&mut self, range: std::ops::Range<usize>, rendered: &mut Rendered) {
+    pub(super) fn run_range(&mut self, range: std::ops::Range<usize>) {
         self.follow = range.len() > 1;
         for i in range {
-            self.run_cell(i, rendered);
+            self.run_cell(i);
         }
     }
 
@@ -152,7 +152,7 @@ impl App {
     }
 
     /// One of an execution's two end signals arrived; finish on the second.
-    fn end_signal(&mut self, parent: String, rendered: &mut Rendered) {
+    fn end_signal(&mut self, parent: String) {
         if !self.running.contains_key(&parent) {
             return; // idle of kernel_info etc., or a forgotten execution
         }
@@ -162,7 +162,7 @@ impl App {
         self.half_done.remove(&parent);
         // gutter timing: wall time from execute_input to the end
         if let (Some(idx), Some(t)) = (self.target_cell(&parent), self.started.get(&parent))
-            && let Some(b) = rendered.blocks.get_mut(idx)
+            && let Some(b) = self.rendered.blocks.get_mut(idx)
         {
             b.elapsed = Some(t.elapsed());
         }
@@ -178,7 +178,7 @@ impl App {
         self.running = self.running.drain().filter_map(|(k, v)| f(v).map(|v| (k, v))).collect();
     }
 
-    pub(super) fn run_cell(&mut self, idx: usize, rendered: &mut Rendered) {
+    pub(super) fn run_cell(&mut self, idx: usize) {
         let Some(cell) = self.notebook.cells.get_mut(idx) else {
             return;
         };
@@ -202,16 +202,16 @@ impl App {
         cell.outputs = Some(Vec::new());
         // a fresh run follows its tail, even if the previous output had been
         // scrolled up (rebuild_cell preserves the viewport across rebuilds)
-        if let Some(b) = rendered.blocks.get_mut(idx) {
+        if let Some(b) = self.rendered.blocks.get_mut(idx) {
             b.out_scroll = usize::MAX;
         }
         let msg_id = kernel.execute(cell.source.clone());
-        rendered.rebuild_cell(idx, cell);
+        self.rendered.rebuild_cell(idx, cell);
         self.running.insert(msg_id, idx);
         self.touch_outputs();
     }
 
-    pub fn apply_kernel_event(&mut self, event: Event, rendered: &mut Rendered) {
+    pub fn apply_kernel_event(&mut self, event: Event) {
         match event {
             Event::Ready(kernel) if kernel.launch != self.launch => {
                 log::info!("dropping stale kernel from launch {}", kernel.launch);
@@ -234,7 +234,7 @@ impl App {
                         serde_json::json!({"name": kernel.name,
                             "display_name": kernel.display_name, "language": kernel.language}),
                     );
-                    rendered.set_language(&kernel.language);
+                    self.rendered.set_language(&kernel.language);
                 }
                 // IPython completes with jedi (static analysis, slow on big
                 // modules) unless told otherwise; the live-object completer
@@ -251,7 +251,7 @@ impl App {
                         .iter()
                         .position(|c| c.extra.get("id").and_then(Value::as_str) == Some(&id));
                     if let Some(idx) = idx {
-                        self.run_cell(idx, rendered);
+                        self.run_cell(idx);
                     }
                 }
             }
@@ -293,7 +293,7 @@ impl App {
                         }
                     }
                     if hit {
-                        rendered.rebuild_cell(idx, cell);
+                        self.rendered.rebuild_cell(idx, cell);
                         any = true;
                     }
                 }
@@ -308,7 +308,7 @@ impl App {
             Event::LanguageInfo(info) => {
                 // as jupyter writes it; saved with the next w
                 if let Some(name) = info["name"].as_str() {
-                    rendered.set_language(name);
+                    self.rendered.set_language(name);
                 }
                 if let Some(meta) = self
                     .notebook
@@ -327,7 +327,7 @@ impl App {
                         cell.outputs = Some(Vec::new());
                     }
                     cell.push_output(output);
-                    rendered.rebuild_cell(idx, cell);
+                    self.rendered.rebuild_cell(idx, cell);
                     self.touch_outputs();
                 }
             }
@@ -337,7 +337,7 @@ impl App {
                 } else if let Some(idx) = self.target_cell(&parent) {
                     let cell = &mut self.notebook.cells[idx];
                     cell.outputs = Some(Vec::new());
-                    rendered.rebuild_cell(idx, cell);
+                    self.rendered.rebuild_cell(idx, cell);
                     self.touch_outputs();
                 }
             }
@@ -366,10 +366,10 @@ impl App {
             Event::Status { parent, busy } => {
                 self.kernel_busy = busy;
                 if !busy {
-                    self.end_signal(parent, rendered);
+                    self.end_signal(parent);
                 }
             }
-            Event::Done { parent } => self.end_signal(parent, rendered),
+            Event::Done { parent } => self.end_signal(parent),
             Event::Dead(reason) => {
                 self.kernel = None;
                 self.kernel_busy = false;

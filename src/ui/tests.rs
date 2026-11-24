@@ -360,7 +360,7 @@ fn completion_popup_draws_aligned_columns_and_a_scrollbar() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = crate::app::App::open(path.clone(), None, tx).unwrap();
     std::fs::remove_file(&path).ok();
-    let mut rendered = Rendered::build(&app.notebook, None, Default::default());
+    app.rendered = Rendered::build(&app.notebook, None, Default::default());
     app.open_editor_for_test();
     let mut c = Completion::for_test(6, 9);
     for (i, name) in (0..20).map(|i| (i, format!(".li{i:02}"))) {
@@ -373,7 +373,7 @@ fn completion_popup_draws_aligned_columns_and_a_scrollbar() {
     c.sel = 13; // scrolled past the first window
     app.completion = Some(c);
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(70, 20)).unwrap();
-    terminal.draw(|f| draw(f, &mut app, &mut rendered)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
     let rows = buffer_rows(&terminal);
     if std::env::var_os("JOTTER_SHOW").is_some() {
         println!("{}", rows.join("\n"));
@@ -402,12 +402,12 @@ fn signature_popup_sits_under_the_line_with_the_argument_highlighted() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = crate::app::App::open(path.clone(), None, tx).unwrap();
     std::fs::remove_file(&path).ok();
-    let mut rendered = Rendered::build(&app.notebook, None, Default::default());
+    app.rendered = Rendered::build(&app.notebook, None, Default::default());
     app.open_editor_for_test(); // insert mode, cursor at the end
     app.signature =
         Some(SigHelp::for_test("np.std(a, axis=None, ddof=0)", 1, None).placed(10, "np.std"));
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 10)).unwrap();
-    terminal.draw(|f| draw(f, &mut app, &mut rendered)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
     let rows = buffer_rows(&terminal);
     let code = rows.iter().position(|r| r.contains("x = np.std(a,")).unwrap();
     let pop = &rows[code + 1];
@@ -458,9 +458,9 @@ fn long_markdown_wraps_instead_of_clipping() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = crate::app::App::open(path.clone(), None, tx).unwrap();
     std::fs::remove_file(&path).ok();
-    let mut rendered = Rendered::build(&app.notebook, None, Default::default());
+    app.rendered = Rendered::build(&app.notebook, None, Default::default());
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
-    terminal.draw(|f| draw(f, &mut app, &mut rendered)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
     let words: usize = buffer_rows(&terminal).iter().map(|r| r.matches("word").count()).sum();
     assert_eq!(words, 30, "every word visible across wrapped rows");
     // clicks on a continuation row map back to the one source line
@@ -594,11 +594,11 @@ fn draw_windows_long_output_and_renders_cells() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = crate::app::App::open(path.clone(), None, tx).unwrap();
     std::fs::remove_file(&path).ok();
-    let mut rendered = Rendered::build(&app.notebook, None, Default::default());
+    app.rendered = Rendered::build(&app.notebook, None, Default::default());
     // wide enough for the status line to show the whole temp path (macOS
     // puts it under /var/folders/<random>/T) and still the cell counter
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 30)).unwrap();
-    terminal.draw(|f| draw(f, &mut app, &mut rendered)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
     let rows = buffer_rows(&terminal);
     let all = rows.join("\n");
     assert!(
@@ -686,36 +686,36 @@ fn only_cells_near_the_screen_render() {
     let mut app = crate::app::App::open(path.clone(), None, tx).unwrap();
     std::fs::remove_file(&path).ok();
     let picker = Picker::from_fontsize(FontSize::new(8, 16));
-    let mut rendered = Rendered::build(&app.notebook, Some(picker), Default::default());
+    app.rendered.set_picker(Some(picker));
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 20)).unwrap();
-    let mut draw_rows = |app: &mut crate::app::App, rendered: &mut Rendered| {
-        terminal.draw(|f| draw(f, app, rendered)).unwrap();
+    let mut draw_rows = |app: &mut crate::app::App| {
+        terminal.draw(|f| draw(f, app)).unwrap();
         buffer_rows(&terminal)
     };
-    let count = |r: &Rendered| r.blocks.iter().filter(|b| b.rendered).count();
+    let count = |app: &crate::app::App| app.rendered.blocks.iter().filter(|b| b.rendered).count();
 
-    draw_rows(&mut app, &mut rendered);
-    assert!(rendered.blocks[0].rendered);
+    draw_rows(&mut app);
+    assert!(app.rendered.blocks[0].rendered);
     // the screen plus a screen of margin below: a handful of cells
-    assert!(count(&rendered) < 20, "{} rendered", count(&rendered));
+    assert!(count(&app) < 20, "{} rendered", count(&app));
 
     // G: the end renders, the cells in between never do (the start stays
     // cached: it fits the memory budget; eviction has its own test)
     app.selected = 299;
-    let rows = draw_rows(&mut app, &mut rendered);
+    let rows = draw_rows(&mut app);
     assert!(rows.iter().any(|r| r.contains("out-299")), "{rows:#?}");
-    assert!(rendered.blocks[299].rendered && !rendered.blocks[150].rendered);
-    assert!(count(&rendered) < 30, "{} rendered", count(&rendered));
+    assert!(app.rendered.blocks[299].rendered && !app.rendered.blocks[150].rendered);
+    assert!(count(&app) < 30, "{} rendered", count(&app));
 
     // a math cell above the view gets its exact height: the screen stays put
     app.manual_scroll = true;
-    let before = draw_rows(&mut app, &mut rendered);
-    let above = (0..299).rev().find(|&i| i % 2 == 0 && !rendered.blocks[i].rendered).unwrap();
-    let est = rendered.blocks[above].rows;
-    rendered.ensure(above, &app.notebook.cells[above]);
-    assert_ne!(rendered.blocks[above].rows, est, "the estimate was off");
+    let before = draw_rows(&mut app);
+    let above = (0..299).rev().find(|&i| i % 2 == 0 && !app.rendered.blocks[i].rendered).unwrap();
+    let est = app.rendered.blocks[above].rows;
+    app.rendered.ensure(above, &app.notebook.cells[above]);
+    assert_ne!(app.rendered.blocks[above].rows, est, "the estimate was off");
     let scroll = app.scroll;
-    assert_eq!(draw_rows(&mut app, &mut rendered), before);
+    assert_eq!(draw_rows(&mut app), before);
     assert_ne!(app.scroll, scroll, "the view moved with the content");
 }
 
@@ -761,7 +761,7 @@ fn sweeping_a_notebook_renders_each_cell_once() {
     let mut app = crate::app::App::open(path.clone(), None, tx).unwrap();
     std::fs::remove_file(&path).ok();
     let picker = Picker::from_fontsize(FontSize::new(8, 16));
-    let mut r = Rendered::build(&app.notebook, Some(picker), Default::default());
+    app.rendered.set_picker(Some(picker));
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 36)).unwrap();
     let before = RENDERS.load(Relaxed);
     let n = app.notebook.cells.len();
@@ -771,12 +771,12 @@ fn sweeping_a_notebook_renders_each_cell_once() {
             crossterm::event::KeyModifiers::NONE,
         )
     };
-    term.draw(|f| draw(f, &mut app, &mut r)).unwrap();
+    term.draw(|f| draw(f, &mut app)).unwrap();
     for _ in 0..3 {
         for c in ['j', 'k'] {
             for _ in 0..n - 1 {
-                app.on_key(key(c), &mut r);
-                term.draw(|f| draw(f, &mut app, &mut r)).unwrap();
+                app.on_key(key(c));
+                term.draw(|f| draw(f, &mut app)).unwrap();
             }
         }
     }
@@ -821,9 +821,9 @@ fn command_line_draws_as_a_titled_popup() {
     std::fs::remove_file(&path).ok();
     app.prompt =
         Some(crate::app::Prompt { kind: crate::app::PromptKind::Command, buf: "wq".into() });
-    let mut rendered = Rendered::build(&app.notebook, None, Default::default());
+    app.rendered = Rendered::build(&app.notebook, None, Default::default());
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 20)).unwrap();
-    terminal.draw(|f| draw(f, &mut app, &mut rendered)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
     let rows = buffer_rows(&terminal);
     let top = rows.iter().position(|r| r.contains("─ Cmdline ─")).expect("title");
     assert!(rows[top].trim_start().starts_with('╭'));
@@ -845,9 +845,9 @@ fn visual_selection_marks_its_cells_in_the_gutter() {
     std::fs::remove_file(&path).ok();
     app.visual = Some(0);
     app.selected = 1;
-    let mut rendered = Rendered::build(&app.notebook, None, Default::default());
+    app.rendered = Rendered::build(&app.notebook, None, Default::default());
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
-    terminal.draw(|f| draw(f, &mut app, &mut rendered)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
     let rows = buffer_rows(&terminal);
     if std::env::var_os("JOTTER_SHOW").is_some() {
         println!("{}", rows.join("\n"));
@@ -874,7 +874,7 @@ fn zt_zz_zb_place_the_selected_cell() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = crate::app::App::open(path.clone(), None, tx).unwrap();
     std::fs::remove_file(&path).ok();
-    let mut rendered = Rendered::build(&app.notebook, None, Default::default());
+    app.rendered = Rendered::build(&app.notebook, None, Default::default());
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 13)).unwrap();
     app.selected = 15;
     let mut row_of_c15 = |app: &mut crate::app::App, keys: &str| {
@@ -883,9 +883,9 @@ fn zt_zz_zb_place_the_selected_cell() {
                 crossterm::event::KeyCode::Char(c),
                 crossterm::event::KeyModifiers::NONE,
             );
-            app.on_key(k, &mut rendered);
+            app.on_key(k);
         }
-        terminal.draw(|f| draw(f, app, &mut rendered)).unwrap();
+        terminal.draw(|f| draw(f, app)).unwrap();
         let rows = buffer_rows(&terminal);
         rows.iter().position(|r| r.trim_end() == "▌ c15").unwrap()
     };
@@ -913,9 +913,9 @@ fn marks_show_in_headers_and_a_sidebar() {
     let (a, b) = (id(2), id(0));
     app.marks.insert('a', a);
     app.marks.insert('b', b);
-    let mut rendered = Rendered::build(&app.notebook, None, Default::default());
+    app.rendered = Rendered::build(&app.notebook, None, Default::default());
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 14)).unwrap();
-    terminal.draw(|f| draw(f, &mut app, &mut rendered)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
     let rows = buffer_rows(&terminal);
     if std::env::var_os("JOTTER_SHOW").is_some() {
         println!("{}", rows.join("\n"));
@@ -927,7 +927,7 @@ fn marks_show_in_headers_and_a_sidebar() {
     assert!(b_row < a_row);
     // too narrow: no sidebar, headers still carry the letters
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 14)).unwrap();
-    terminal.draw(|f| draw(f, &mut app, &mut rendered)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
     let rows = buffer_rows(&terminal);
     assert!(!rows.join("").contains("Marks"));
     assert!(rows[0].contains("'b"));

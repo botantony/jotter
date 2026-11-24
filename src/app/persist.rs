@@ -136,13 +136,13 @@ impl App {
     /// External-modification check, run on focus-gain and the periodic tick.
     /// Like nvim autoread: a clean buffer reloads silently; a dirty buffer
     /// (or an open editor, which may hold uncommitted text) prompts.
-    pub fn check_disk(&mut self, rendered: &mut Rendered) {
+    pub fn check_disk(&mut self) {
         let on_disk = mtime(&self.path);
         if on_disk == self.disk_mtime || self.confirm.is_some() {
             return;
         }
         if !self.dirty && self.editor.is_none() {
-            match self.reload(rendered) {
+            match self.reload() {
                 Ok(()) => self.message = Some("file changed on disk — reloaded".into()),
                 Err(e) => {
                     self.message = Some(format!("file changed on disk, reload failed: {e:#}"));
@@ -155,9 +155,9 @@ impl App {
     }
 
     /// Replace the in-memory notebook with the on-disk state.
-    pub(super) fn reload(&mut self, rendered: &mut Rendered) -> Result<()> {
+    pub(super) fn reload(&mut self) -> Result<()> {
         self.notebook = Notebook::open(&self.path)?;
-        rendered.rebuild_all(&self.notebook);
+        self.rendered.rebuild_all(&self.notebook);
         if let Some(ed) = self.editor.take()
             && let Some(s) = ed.into_session()
         {
@@ -176,18 +176,13 @@ impl App {
 
     /// `:w` from inside a cell: commit its text, then save like `w` (`:w!`
     /// like `W`), with the on-disk-change refusal phrased in the editor's terms.
-    pub(super) fn write_from_editor(
-        &mut self,
-        source: String,
-        force: bool,
-        rendered: &mut Rendered,
-    ) -> bool {
-        self.update_cell_source(source, rendered);
+    pub(super) fn write_from_editor(&mut self, source: String, force: bool) -> bool {
+        self.update_cell_source(source);
         if !force && self.changed_on_disk() {
             self.message = Some("file changed on disk since open/save — :w! to overwrite".into());
             return false;
         }
-        self.save_notebook(force, rendered)
+        self.save_notebook(force)
     }
 
     fn changed_on_disk(&self) -> bool {
@@ -196,7 +191,7 @@ impl App {
 
     /// Save to `path`; `force` skips the external-modification check.
     /// Returns true on success.
-    pub(super) fn save_notebook(&mut self, force: bool, rendered: &mut Rendered) -> bool {
+    pub(super) fn save_notebook(&mut self, force: bool) -> bool {
         if self.is_scratch() {
             self.message = Some("scratchpad has no file — :w name.ipynb (or name.py)".into());
             return false;
@@ -207,7 +202,7 @@ impl App {
         }
         let formatted = crate::config::get()
             .format_on_save
-            .then(|| self.format_cells(0..self.notebook.cells.len(), rendered));
+            .then(|| self.format_cells(0..self.notebook.cells.len()));
         match self.notebook.save(&self.path) {
             Ok(()) => {
                 self.dirty = false;
@@ -229,7 +224,7 @@ impl App {
 
     /// Save under a new path and continue editing that file. Returns false
     /// while waiting for a second Enter to overwrite an existing file.
-    pub(super) fn save_as(&mut self, typed: &str, rendered: &mut Rendered) -> bool {
+    pub(super) fn save_as(&mut self, typed: &str) -> bool {
         let target = expand_tilde(typed.trim());
         if target.as_os_str().is_empty() {
             return true;
@@ -243,7 +238,7 @@ impl App {
         self.overwrite_armed = None;
         let old_side = self.autosave_path();
         let old = std::mem::replace(&mut self.path, target);
-        if self.save_notebook(true, rendered) {
+        if self.save_notebook(true) {
             if self.autosave_path() != old_side {
                 let _ = std::fs::remove_file(old_side);
             }

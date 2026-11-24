@@ -3,7 +3,7 @@
 use super::*;
 
 impl App {
-    pub fn on_mouse(&mut self, mouse: MouseEvent, rendered: &mut Rendered) {
+    pub fn on_mouse(&mut self, mouse: MouseEvent) {
         if let Some(p) = &mut self.pager {
             match mouse.kind {
                 MouseEventKind::ScrollUp => p.top = p.top.saturating_sub(3),
@@ -57,7 +57,8 @@ impl App {
                             .flatten()
                         {
                             Some(&Hit { cell, kind: HitKind::Output })
-                                if rendered
+                                if self
+                                    .rendered
                                     .blocks
                                     .get(cell)
                                     .is_some_and(|b| b.output_scrollable()) =>
@@ -68,7 +69,7 @@ impl App {
                         }
                     });
                 if let WheelTarget::Output(cell) = target {
-                    match rendered.blocks.get_mut(cell) {
+                    match self.rendered.blocks.get_mut(cell) {
                         Some(b) if b.output_scrollable() => {
                             let before = b.win_start();
                             b.scroll_output(delta);
@@ -88,14 +89,12 @@ impl App {
                 }
                 self.wheel_latch = Some((Instant::now(), target));
             }
-            MouseEventKind::Down(MouseButton::Left) => {
-                self.click(mouse.column, mouse.row, rendered)
-            }
+            MouseEventKind::Down(MouseButton::Left) => self.click(mouse.column, mouse.row),
             _ => {}
         }
     }
 
-    fn click(&mut self, x: u16, y: u16, rendered: &mut Rendered) {
+    fn click(&mut self, x: u16, y: u16) {
         let body = self.body;
         if y < body.y || y >= body.y + body.height || x < body.x {
             return;
@@ -111,7 +110,7 @@ impl App {
         self.last_click = Some((Instant::now(), x, y));
 
         if self.editor.is_some() && cell != self.selected {
-            self.commit_editor(rendered);
+            self.commit_editor();
         }
         self.visual = None;
         self.selected = cell;

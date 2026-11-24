@@ -27,7 +27,6 @@ use crossterm::{
 };
 use futures::{FutureExt, StreamExt};
 use tokio::sync::mpsc;
-use ui::Rendered;
 
 /// A fast Jupyter notebook TUI
 ///
@@ -158,13 +157,12 @@ async fn main() -> Result<()> {
         let _ = write!(std::io::stdout(), "\x1b_Ga=d,d=A\x1b\\");
         let _ = std::io::stdout().flush();
     }
-    let dir = app.path.parent().map(PathBuf::from).unwrap_or_default();
-    let mut rendered = Rendered::build(&app.notebook, picker, dir);
+    app.rendered.set_picker(picker);
 
     app.keyboard_protocol = enhanced;
     ::log::info!(
         "terminal: graphics {}, keyboard protocol {}",
-        rendered.graphics_summary(),
+        app.rendered.graphics_summary(),
         if enhanced { "kitty" } else { "legacy" }
     );
     enter_extras(enhanced);
@@ -172,18 +170,13 @@ async fn main() -> Result<()> {
     // alternate screen and printed the message, and this path switches off
     // the modes it doesn't know about (mouse, paste, keyboard protocol) and
     // keeps the unsaved work as the recovery copy.
-    let result = std::panic::AssertUnwindSafe(run(
-        &mut terminal,
-        &mut app,
-        &mut rendered,
-        &mut events_rx,
-        enhanced,
-    ))
-    .catch_unwind()
-    .await;
+    let result =
+        std::panic::AssertUnwindSafe(run(&mut terminal, &mut app, &mut events_rx, enhanced))
+            .catch_unwind()
+            .await;
     // the last frame's images queue their deletes at drop like replaced
     // ones, and the loop that wrote those is over: write them here
-    drop(rendered);
+    app.rendered.blocks.clear();
     let _ = ui::flush_kitty_deletes(&mut std::io::stdout());
     leave_extras(enhanced);
     let _ = crossterm::execute!(std::io::stdout(), SetCursorStyle::DefaultUserShape);
@@ -205,7 +198,6 @@ async fn main() -> Result<()> {
 async fn run(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
-    rendered: &mut Rendered,
     kernel_events: &mut mpsc::UnboundedReceiver<kernel::Event>,
     enhanced: bool,
 ) -> Result<()> {
@@ -242,7 +234,7 @@ async fn run(
         if sync {
             let _ = crossterm::queue!(std::io::stdout(), BeginSynchronizedUpdate);
         }
-        let drawn = terminal.draw(|frame| ui::draw(frame, app, rendered));
+        let drawn = terminal.draw(|frame| ui::draw(frame, app));
         // ended even when the draw failed: a terminal left inside a
         // synchronized update stops painting until its timeout
         if sync {
@@ -266,10 +258,10 @@ async fn run(
                 // resolve against the last frame.
                 loop {
                     let is_key = matches!(event, Event::Key(_) | Event::Paste(_));
-                    match on_term_event(app, rendered, event) {
+                    match on_term_event(app, event) {
                         Action::None => {}
                         Action::ExternalEdit => {
-                            external_edit(terminal, app, rendered, enhanced);
+                            external_edit(terminal, app, enhanced);
                             break;
                         }
                         Action::Copy(text) => osc52(&text),
@@ -292,7 +284,7 @@ async fn run(
                     queue_kernel_event(&mut queued, event);
                 }
                 for event in queued {
-                    app.apply_kernel_event(event, rendered);
+                    app.apply_kernel_event(event);
                 }
             }
             // terminal closed / killed: keep the work, restore the terminal,
@@ -302,7 +294,7 @@ async fn run(
             _ = sigint.recv() => app.on_signal("SIGINT"),
             // fallback for terminals without focus events, then the sidecar
             _ = autosave.tick() => {
-                app.check_disk(rendered);
+                app.check_disk();
                 app.maybe_autosave();
             }
         }
@@ -321,15 +313,15 @@ fn queue_kernel_event(queued: &mut Vec<kernel::Event>, event: kernel::Event) {
     queued.push(event);
 }
 
-fn on_term_event(app: &mut App, rendered: &mut Rendered, event: Event) -> Action {
+fn on_term_event(app: &mut App, event: Event) -> Action {
     match event {
-        Event::Key(key) if key.kind == KeyEventKind::Press => return app.on_key(key, rendered),
-        Event::Paste(text) => app.on_paste(text, rendered),
-        Event::Mouse(mouse) => app.on_mouse(mouse, rendered),
+        Event::Key(key) if key.kind == KeyEventKind::Press => return app.on_key(key),
+        Event::Paste(text) => app.on_paste(text),
+        Event::Mouse(mouse) => app.on_mouse(mouse),
         // reflow happens on redraw; images need a rebuild if the font changed
-        Event::Resize(..) => rendered.on_resize(&app.notebook),
+        Event::Resize(..) => app.rendered.on_resize(&app.notebook),
         // nvim-autoread-style external change detection
-        Event::FocusGained => app.check_disk(rendered),
+        Event::FocusGained => app.check_disk(),
         _ => {} // focus etc. -> redraw on next loop
     }
     Action::None
@@ -344,16 +336,11 @@ fn editor_command(editor: &str, file: &std::path::Path) -> std::process::Command
 }
 
 /// Suspend the TUI, open the selected cell in $VISUAL/$EDITOR, read it back.
-fn external_edit(
-    terminal: &mut ratatui::DefaultTerminal,
-    app: &mut App,
-    rendered: &mut Rendered,
-    enhanced: bool,
-) {
+fn external_edit(terminal: &mut ratatui::DefaultTerminal, app: &mut App, enhanced: bool) {
     let Some(cell) = app.notebook.cells.get(app.selected) else {
         return;
     };
-    let suffix = rendered.edit_suffix(cell);
+    let suffix = app.rendered.edit_suffix(cell);
     let tmp = std::env::temp_dir().join(format!("jotter-cell-{}.{suffix}", std::process::id()));
     let editor_cmd = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
@@ -370,7 +357,7 @@ fn external_edit(
     });
     match result {
         Ok(status) if status.success() => match std::fs::read_to_string(&tmp) {
-            Ok(source) => app.apply_external_edit(source, rendered),
+            Ok(source) => app.apply_external_edit(source),
             Err(e) => app.message = Some(format!("read-back failed: {e}")),
         },
         // sh's own "not found" line is wiped by clear_screen(), so say it ourselves
