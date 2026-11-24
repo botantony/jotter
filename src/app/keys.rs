@@ -55,47 +55,50 @@ impl App {
         // scroll keys move through an overlay; anything else closes it
         // (the draw clamps the positions)
         let scroll = scroll_key(key, (self.body.height as usize / 2).max(1));
-        if let Some(up) = &mut self.logs {
-            match scroll {
-                Some(d) => *up = up.saturating_add_signed(d.saturating_neg()), /* rows up from */
-                // the newest
-                None => self.logs = None,
-            }
-            return Action::None;
-        }
-        if let Some(pager) = &mut self.pager {
-            match scroll {
-                Some(d) => pager.top = pager.top.saturating_add_signed(d),
-                None => self.pager = None,
-            }
-            return Action::None;
-        }
-        if let Some(help) = &mut self.help {
+        if let Some(overlay) = &mut self.overlay {
             let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-            match key.code {
-                // `/`: type a filter; Enter keeps it, Esc drops it
-                KeyCode::Enter if help.typing => help.typing = false,
-                KeyCode::Esc if help.typing || !help.filter.is_empty() => {
-                    *help = Help::default();
+            // false: the key was not for the overlay, so it closes
+            let keep = match overlay {
+                Overlay::Debug(_) | Overlay::Zoom(_) => false,
+                Overlay::Logs(up) => {
+                    // rows up from the newest
+                    if let Some(d) = scroll {
+                        *up = up.saturating_add_signed(d.saturating_neg());
+                    }
+                    scroll.is_some()
                 }
-                KeyCode::Backspace if help.typing => {
-                    help.filter.pop();
+                Overlay::Pager(pager) => {
+                    if let Some(d) = scroll {
+                        pager.top = pager.top.saturating_add_signed(d);
+                    }
+                    scroll.is_some()
                 }
-                KeyCode::Char(c) if help.typing && !ctrl => {
-                    help.filter.push(c);
-                    help.top = 0;
+                Overlay::Help(help) => {
+                    // `/`: type a filter; Enter keeps it, Esc drops it
+                    match key.code {
+                        KeyCode::Enter if help.typing => help.typing = false,
+                        KeyCode::Esc if help.typing || !help.filter.is_empty() => {
+                            *help = Help::default()
+                        }
+                        KeyCode::Backspace if help.typing => {
+                            help.filter.pop();
+                        }
+                        KeyCode::Char(c) if help.typing && !ctrl => {
+                            help.filter.push(c);
+                            help.top = 0;
+                        }
+                        KeyCode::Char('/') => help.typing = true,
+                        _ => match scroll {
+                            Some(d) => help.top = help.top.saturating_add_signed(d),
+                            None => self.overlay = None,
+                        },
+                    }
+                    true
                 }
-                KeyCode::Char('/') => help.typing = true,
-                _ => match scroll {
-                    Some(d) => help.top = help.top.saturating_add_signed(d),
-                    None => self.help = None,
-                },
+            };
+            if !keep {
+                self.overlay = None;
             }
-            return Action::None;
-        }
-        if self.debug.is_some() || self.zoom.is_some() {
-            self.debug = None;
-            self.zoom = None;
             return Action::None;
         }
         if self.stdin_req.is_some() {
@@ -406,12 +409,13 @@ impl App {
             (Some('z'), KeyCode::Char('z')) => self.align = Some(Align::Middle),
             (Some('z'), KeyCode::Char('b')) => self.align = Some(Align::Bottom),
             (Some('z'), KeyCode::Char('i')) => {
-                self.zoom = self
+                self.overlay = self
                     .notebook
                     .cells
                     .get(self.selected)
-                    .and_then(|c| self.rendered.zoom_image(c, self.body));
-                self.message = Some(match self.zoom {
+                    .and_then(|c| self.rendered.zoom_image(c, self.body))
+                    .map(Overlay::Zoom);
+                self.message = Some(match self.overlay {
                     Some(_) => "zoom — any key closes".into(),
                     None => "no image output in this cell".into(),
                 });
@@ -554,12 +558,12 @@ impl App {
                     self.restart_kernel(false)
                 }
                 KeyCode::Char('R') => self.confirm = Some(Confirm::Restart),
-                KeyCode::Char('?') => self.help = Some(Help::default()),
-                KeyCode::Char('L') => self.logs = Some(0),
+                KeyCode::Char('?') => self.overlay = Some(Overlay::Help(Help::default())),
+                KeyCode::Char('L') => self.overlay = Some(Overlay::Logs(0)),
                 KeyCode::Char('D') => {
                     let text = self.debug_report();
                     log::info!(target: "debug", "{}", text.replace('\n', " | "));
-                    self.debug = Some(text.clone());
+                    self.overlay = Some(Overlay::Debug(text.clone()));
                     self.message = Some("debug info copied to clipboard".into());
                     return Action::Copy(text);
                 }

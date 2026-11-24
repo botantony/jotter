@@ -4,32 +4,20 @@ use super::*;
 
 impl App {
     pub fn on_mouse(&mut self, mouse: MouseEvent) {
-        if let Some(p) = &mut self.pager {
-            match mouse.kind {
-                MouseEventKind::ScrollUp => p.top = p.top.saturating_sub(3),
-                MouseEventKind::ScrollDown => p.top += 3,
-                _ => {}
+        let wheel: isize = match mouse.kind {
+            MouseEventKind::ScrollUp => -3,
+            MouseEventKind::ScrollDown => 3,
+            _ => 0,
+        };
+        // an overlay or a question owns the screen; keys close it
+        match &mut self.overlay {
+            Some(Overlay::Pager(Pager { top, .. }) | Overlay::Help(Help { top, .. })) => {
+                return *top = top.saturating_add_signed(wheel);
             }
-            return;
-        }
-        if let Some(up) = &mut self.logs {
-            match mouse.kind {
-                MouseEventKind::ScrollUp => *up += 3,
-                MouseEventKind::ScrollDown => *up = up.saturating_sub(3),
-                _ => {}
-            }
-            return;
-        }
-        if let Some(h) = &mut self.help {
-            match mouse.kind {
-                MouseEventKind::ScrollUp => h.top = h.top.saturating_sub(3),
-                MouseEventKind::ScrollDown => h.top += 3,
-                _ => {}
-            }
-            return;
-        }
-        if self.zoom.is_some() || self.debug.is_some() || self.confirm.is_some() {
-            return; // overlay/question owns the screen; keys close it
+            Some(Overlay::Logs(up)) => return *up = up.saturating_add_signed(-wheel),
+            Some(Overlay::Debug(_) | Overlay::Zoom(_)) => return,
+            None if self.confirm.is_some() => return,
+            None => {}
         }
         if matches!(
             mouse.kind,

@@ -142,8 +142,7 @@ fn update_display_data_replaces_matching_outputs_everywhere() {
 #[test]
 fn input_request_closes_overlays_so_keys_reach_the_box() {
     let mut app = one_cell_app("input-overlay");
-    app.help = Some(Help::default());
-    app.logs = Some(0);
+    app.overlay = Some(Overlay::Help(Help::default()));
     let request = jupyter_protocol::messaging::JupyterMessage::new(
         jupyter_protocol::messaging::InputRequest::default(),
         None,
@@ -153,7 +152,7 @@ fn input_request_closes_overlays_so_keys_reach_the_box() {
         prompt: "name: ".into(),
         password: false,
     });
-    assert!(app.help.is_none() && app.logs.is_none());
+    assert!(app.overlay.is_none());
     app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
     assert_eq!(app.stdin_req.as_ref().unwrap().buf, "a");
 }

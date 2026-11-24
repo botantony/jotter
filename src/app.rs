@@ -147,6 +147,20 @@ pub struct Help {
     pub top: usize,
 }
 
+/// What covers the notebook, one at a time; keys go to it first.
+pub enum Overlay {
+    /// `?`: the key reference.
+    Help(Help),
+    /// `L` log viewer: rows scrolled up from the newest entry.
+    Logs(usize),
+    /// Shift+Tab docs.
+    Pager(Pager),
+    /// `D` debug text (also copied to the clipboard).
+    Debug(String),
+    /// `zi`: an image, fullscreen.
+    Zoom(ratatui_image::sliced::SlicedProtocol),
+}
+
 /// (row, col) in chars -> char offset into `source` (rows split on '\n').
 pub fn char_offset(source: &str, (row, col): (usize, usize)) -> usize {
     let mut off = 0;
@@ -211,8 +225,7 @@ pub struct App {
     pub manual_scroll: bool,
     /// `zz`/`zt`/`zb`: where the next draw puts the selected cell.
     pub align: Option<Align>,
-    /// Keybinding cheatsheet overlay is open.
-    pub help: Option<Help>,
+    pub overlay: Option<Overlay>,
     /// Total rendered lines of the last draw (scroll bound).
     pub content_lines: usize,
     last_click: Option<(Instant, u16, u16)>,
@@ -268,19 +281,12 @@ pub struct App {
     pub signature: Option<SigHelp>,
     /// inspect_request msg_id awaiting its reply.
     pending_inspect: Option<String>,
-    pub pager: Option<Pager>,
     undo_stack: Vec<CellOp>,
     redo_stack: Vec<CellOp>,
     /// Numeric count prefix (`5G`, `3j`).
     count: Option<usize>,
     /// Last status message sent to the log (ui::draw logs each one once).
     pub logged_status: Option<String>,
-    /// `L` log viewer: Some(rows scrolled up from the newest entry).
-    pub logs: Option<usize>,
-    /// `D` debug overlay text (also copied to the clipboard).
-    pub debug: Option<String>,
-    /// `z`: fullscreen image overlay (any key closes).
-    pub zoom: Option<ratatui_image::sliced::SlicedProtocol>,
     /// Wheel-gesture latch: ticks in one burst keep their initial target even
     /// as content moves under the pointer.
     wheel_latch: Option<(Instant, WheelTarget)>,
@@ -333,7 +339,7 @@ impl App {
             body: Rect::default(),
             manual_scroll: false,
             align: None,
-            help: None,
+            overlay: None,
             content_lines: 0,
             last_click: None,
             confirm: None,
@@ -362,14 +368,10 @@ impl App {
             completion: None,
             signature: None,
             pending_inspect: None,
-            pager: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             count: None,
             logged_status: None,
-            logs: None,
-            debug: None,
-            zoom: None,
             wheel_latch: None,
         };
         app.disk_mtime = mtime(&app.path);

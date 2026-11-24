@@ -572,7 +572,7 @@ impl App {
         self.pending_inspect = None;
         match text {
             Some(text) if !text.trim().is_empty() => {
-                self.pager = Some(Pager { title: "docs".into(), text, top: 0 })
+                self.overlay = Some(Overlay::Pager(Pager { title: "docs".into(), text, top: 0 }))
             }
             _ => {
                 self.message = Some(

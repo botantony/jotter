@@ -354,13 +354,9 @@ impl App {
             }
             Event::Input { request, prompt, password } => {
                 // overlays take keys first: close them so typing reaches the box
-                if self.zoom.take().is_some() {
+                if let Some(Overlay::Zoom(_)) = self.overlay.take() {
                     self.message = None; // "zoom — any key closes"
                 }
-                self.help = None;
-                self.debug = None;
-                self.logs = None;
-                self.pager = None;
                 self.stdin_req = Some(StdinReq { prompt, buf: String::new(), password, request });
             }
             Event::Status { parent, busy } => {

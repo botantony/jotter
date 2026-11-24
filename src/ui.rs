@@ -14,7 +14,7 @@ use ratatui_image::sliced::{SignedPosition, SlicedImage};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
-    app::{Align, App},
+    app::{Align, App, Overlay},
     notebook::Cell,
     nvim::ModeKind,
 };
@@ -456,7 +456,8 @@ fn paint_cells(frame: &mut Frame, app: &App, lay: &FrameLayout) -> Vec<crate::ap
     // clips rows outside the area it is given: the image was transmitted once,
     // only row-offset placeholders move on scroll. Skipped while the zoom
     // overlay owns the screen.
-    for (i, block) in app.rendered.blocks.iter().enumerate().filter(|_| app.zoom.is_none()) {
+    let zoomed = matches!(app.overlay, Some(Overlay::Zoom(_)));
+    for (i, block) in app.rendered.blocks.iter().enumerate().filter(|_| !zoomed) {
         let editing = lay.editing == Some(i);
         let v = lay.view(&app.rendered, i);
         for img in &block.images {
@@ -600,17 +601,6 @@ fn paint_overlays(
     cursor_at: Option<(u16, u16)>,
 ) {
     let body = lay.body;
-    // `z`: fullscreen image overlay, centered, any key closes.
-    if let Some(proto) = &app.zoom {
-        use ratatui::widgets::Clear;
-        frame.render_widget(Clear, body);
-        let size = proto.size();
-        let pos = SignedPosition {
-            x: (body.width.saturating_sub(size.width) / 2) as i16,
-            y: (body.height.saturating_sub(size.height) / 2) as i16,
-        };
-        frame.render_widget(SlicedImage::new(proto, pos), body);
-    }
     // the completion popup belongs to the text; overlays (docs pager, help,
     // logs, ...) draw over it
     if let (Some(c), Some(at)) = (&mut app.completion, cursor_at)
@@ -647,17 +637,22 @@ fn paint_overlays(
         };
         draw_signature(frame, sig, at, back, completion_below, body, &app.rendered.panel());
     }
-    if let Some(help) = &mut app.help {
-        draw_help(frame, help);
-    }
-    if let Some(up) = &mut app.logs {
-        draw_logs(frame, up);
-    }
-    if let Some(text) = &app.debug {
-        draw_debug(frame, text);
-    }
-    if let Some(pager) = &mut app.pager {
-        draw_pager(frame, pager);
+    match &mut app.overlay {
+        Some(Overlay::Help(help)) => draw_help(frame, help),
+        Some(Overlay::Logs(up)) => draw_logs(frame, up),
+        Some(Overlay::Debug(text)) => draw_debug(frame, text),
+        Some(Overlay::Pager(pager)) => draw_pager(frame, pager),
+        // centered, any key closes
+        Some(Overlay::Zoom(proto)) => {
+            frame.render_widget(ratatui::widgets::Clear, body);
+            let size = proto.size();
+            let pos = SignedPosition {
+                x: (body.width.saturating_sub(size.width) / 2) as i16,
+                y: (body.height.saturating_sub(size.height) / 2) as i16,
+            };
+            frame.render_widget(SlicedImage::new(proto, pos), body);
+        }
+        None => {}
     }
     if let Some(p) = &app.prompt
         && p.kind == crate::app::PromptKind::Command
