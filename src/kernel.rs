@@ -1,5 +1,5 @@
 //! Kernel lifecycle + wire protocol. The UI owns a `Kernel` handle and an
-//! `mpsc::Receiver<Event>`; three small tokio tasks pump the sockets.
+//! `mpsc::Receiver<Event>`; small tokio tasks pump the sockets.
 
 use std::{collections::HashMap, path::PathBuf};
 
@@ -123,6 +123,313 @@ async fn kernelspecs(notebook_dir: &std::path::Path) -> Vec<jupyter_zmq_client::
     all
 }
 
+/// Start the kernel process. Its stderr is drained and its exit watched:
+/// dying on its own is reported as `Event::Dead`, the returned sender kills it.
+fn spawn_process(
+    spec: jupyter_zmq_client::KernelspecDir,
+    connection_file: &std::path::Path,
+    notebook_dir: &std::path::Path,
+    tx: &mpsc::UnboundedSender<Event>,
+) -> Result<(Option<u32>, tokio::sync::oneshot::Sender<()>)> {
+    let mut cmd = spec
+        .command(connection_file, Some(std::process::Stdio::piped()), None)
+        .map_err(|e| anyhow!("kernel argv: {e}"))?;
+    cmd.current_dir(notebook_dir);
+    // Orphan protection for exits that skip Drop (signals, panics, the
+    // runtime tearing down the monitor task): ipykernel's parent poller
+    // exits once its parent is gone — what jupyter_client sets too.
+    cmd.env("JPY_PARENT_PID", std::process::id().to_string());
+    cmd.kill_on_drop(true);
+    let mut child = cmd.spawn().context("spawning kernel process")?;
+    let pid = child.id();
+    log::info!("kernel spawned, pid {pid:?}, connection file {}", connection_file.display());
+
+    // Keep the last stderr line: it's the diagnosis when the kernel dies
+    // (and the pipe must be drained anyway or the kernel could block).
+    let last_stderr = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    if let Some(stderr) = child.stderr.take() {
+        let last = last_stderr.clone();
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut lines = tokio::io::BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.trim().is_empty() {
+                    log::debug!("kernel stderr: {line}");
+                    *last.lock().unwrap() = line;
+                }
+            }
+        });
+    }
+
+    // Monitor: report unexpected exit; kill on demand (Kernel::drop).
+    let (kill_tx, mut kill_rx) = tokio::sync::oneshot::channel::<()>();
+    let monitor_tx = tx.clone();
+    tokio::spawn(async move {
+        let status = tokio::select! {
+            status = child.wait() => Some(status),
+            _ = &mut kill_rx => None,
+        };
+        match status {
+            Some(status) => {
+                let code = status.map_or_else(|e| e.to_string(), |s| s.to_string());
+                let stderr = last_stderr.lock().unwrap().clone();
+                log::warn!("kernel died ({code}): {stderr}");
+                let _ = monitor_tx.send(Event::Dead(format!("kernel died ({code}): {stderr}")));
+            }
+            None => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+            }
+        }
+    });
+    Ok((pid, kill_tx))
+}
+
+fn pump_iopub(
+    mut iopub: jupyter_zmq_client::ClientIoPubConnection,
+    tx: &mpsc::UnboundedSender<Event>,
+) -> tokio::task::AbortHandle {
+    // iopub pump: kernel outputs/status -> UI events
+    let iopub_tx = tx.clone();
+    let iopub_pump = tokio::spawn(async move {
+        loop {
+            match iopub.read().await {
+                Ok(msg) => {
+                    if let Some(ev) = translate_iopub(msg)
+                        && iopub_tx.send(ev).is_err()
+                    {
+                        break; // UI gone
+                    }
+                }
+                Err(e) => {
+                    log::warn!("iopub read failed: {e}");
+                    let _ = iopub_tx.send(Event::Info(format!("kernel connection lost: {e}")));
+                    break;
+                }
+            }
+        }
+    });
+    iopub_pump.abort_handle()
+}
+
+/// The sender for shell requests, and the reply pump's handle.
+fn pump_shell(
+    shell: jupyter_zmq_client::ClientShellConnection,
+    tx: &mpsc::UnboundedSender<Event>,
+) -> (mpsc::UnboundedSender<JupyterMessage>, tokio::task::AbortHandle) {
+    // shell: sender task + reply pump. One request in flight at a time:
+    // ipykernel 7.0-7.3 can strand a request that arrives while it sends a
+    // reply (edge-triggered ZMQ_FD, ipython/ipykernel#1529, fixed in 7.4),
+    // leaving the kernel idle with our request unread. Kept although 7.4
+    // is out: projects pin older ipykernels, and kernel_info reports
+    // IPython's version, not ipykernel's, so a fixed kernel can't be told
+    // apart. The kernel runs shell requests one by one anyway, so waiting
+    // for each reply costs nothing.
+    let (mut shell_send, mut shell_recv) = shell.split();
+    let (shell_tx, mut shell_rx) = mpsc::unbounded_channel::<JupyterMessage>();
+    // (parent, the reply was a failed execute); no parent: a reply that
+    // couldn't be decoded, which can only be the in-flight request's
+    let (replied_tx, mut replied_rx) = mpsc::unbounded_channel::<(Option<String>, bool)>();
+    let abort_tx = tx.clone();
+    tokio::spawn(async move {
+        let mut kept = std::collections::VecDeque::new();
+        // request types this kernel has left unanswered (evcxr: inspect),
+        // with the request given up on: not sent again, or each would
+        // hold up the runs behind it. A reply that comes after all (Julia
+        // compiles its first inspect for longer than the wait) lifts that.
+        let mut unanswered: Vec<(String, String)> = Vec::new();
+        loop {
+            let msg = match kept.pop_front() {
+                Some(msg) => msg,
+                None => match shell_rx.recv().await {
+                    Some(msg) => msg,
+                    None => break,
+                },
+            };
+            let id = msg.header.msg_id.clone();
+            let kind = msg.header.msg_type.clone();
+            let stops = stops_on_error(&msg);
+            // a run takes as long as it takes, and every kernel answers
+            // kernel_info, if only once it is up
+            let patient = matches!(
+                msg.content,
+                JupyterMessageContent::ExecuteRequest(_)
+                    | JupyterMessageContent::KernelInfoRequest(_)
+            );
+            while let Ok((late, _)) = replied_rx.try_recv() {
+                unanswered.retain(|(_, given_up)| Some(given_up) != late.as_ref());
+            }
+            if unanswered.iter().any(|(k, _)| *k == kind) {
+                let _ = abort_tx.send(no_reply(&kind, id));
+                continue;
+            }
+            if shell_send.send(msg).await.is_err() {
+                break;
+            }
+            let reply = async {
+                loop {
+                    match replied_rx.recv().await {
+                        Some((Some(parent), failed)) if parent == id => break Some(failed),
+                        Some((None, _)) => {
+                            let _ = abort_tx.send(no_reply(&kind, id.clone()));
+                            break Some(true);
+                        }
+                        // a late reply to a request given up on
+                        Some((late, _)) => {
+                            unanswered.retain(|(_, given_up)| Some(given_up) != late.as_ref())
+                        }
+                        None => break None,
+                    }
+                }
+            };
+            // anything else is answered promptly or (by some kernels) never
+            let reply = if patient {
+                reply.await
+            } else {
+                match tokio::time::timeout(REPLY_WAIT, reply).await {
+                    Ok(reply) => reply,
+                    Err(_) => {
+                        log::warn!(
+                            "no reply to {kind} in {REPLY_WAIT:?}: not asking again until it comes"
+                        );
+                        let _ = abort_tx.send(no_reply(&kind, id.clone()));
+                        unanswered.push((kind, id));
+                        Some(false)
+                    }
+                }
+            };
+            let Some(failed) = reply else {
+                return; // reply pump gone: connection lost
+            };
+            // stop_on_error: the kernel only aborts runs it has queued,
+            // which is none now, so skip the ones queued here instead,
+            // ending each as an aborted run ends (reply, then idle)
+            if stops && failed {
+                while let Ok(next) = shell_rx.try_recv() {
+                    if stops_on_error(&next) {
+                        let parent = next.header.msg_id;
+                        let _ = abort_tx.send(Event::Done { parent: parent.clone() });
+                        let _ = abort_tx.send(Event::Status { parent, busy: false });
+                    } else {
+                        kept.push_back(next);
+                    }
+                }
+            }
+        }
+    });
+    let reply_tx = tx.clone();
+    let reply_pump = tokio::spawn(async move {
+        use jupyter_zmq_client::RuntimeError;
+        loop {
+            let msg = match shell_recv.read().await {
+                Ok(msg) => msg,
+                Err(e @ (RuntimeError::ZmqError(_) | RuntimeError::IoError(_))) => {
+                    log::warn!("shell read failed: {e}");
+                    let _ = reply_tx.send(Event::Info(format!("kernel connection lost: {e}")));
+                    break;
+                }
+                // a reply this client can't decode (IRkernel answers an
+                // interrupted run with status "abort"): the request is
+                // over all the same
+                Err(e) => {
+                    log::warn!("undecodable shell reply: {e}");
+                    let _ = replied_tx.send((None, true));
+                    continue;
+                }
+            };
+            let parent = parent_id(&msg);
+            let failed = matches!(
+                &msg.content,
+                JupyterMessageContent::ExecuteReply(x) if x.status != ReplyStatus::Ok
+            );
+            let _ = replied_tx.send((Some(parent.clone()), failed)); // next request may go
+            let event = match msg.content {
+                JupyterMessageContent::ExecuteReply(_) => Event::Done { parent },
+                JupyterMessageContent::CompleteReply(x) => Event::Complete {
+                    parent,
+                    types: completion_types(&x.metadata),
+                    matches: x.matches,
+                    start: x.cursor_start,
+                },
+                JupyterMessageContent::InspectReply(x) => Event::Inspect {
+                    parent,
+                    text: x
+                        .found
+                        .then(|| serde_json::to_value(&x.data).ok())
+                        .flatten()
+                        .and_then(|d| d.get("text/plain")?.as_str().map(plain)),
+                },
+                JupyterMessageContent::KernelInfoReply(x) => {
+                    match serde_json::to_value(&x.language_info) {
+                        Ok(info) => Event::LanguageInfo(info),
+                        Err(_) => continue,
+                    }
+                }
+                _ => continue,
+            };
+            if reply_tx.send(event).is_err() {
+                break;
+            }
+        }
+    });
+    (shell_tx, reply_pump.abort_handle())
+}
+
+fn pump_stdin(
+    stdin: jupyter_zmq_client::ClientStdinConnection,
+    tx: &mpsc::UnboundedSender<Event>,
+) -> mpsc::UnboundedSender<JupyterMessage> {
+    // stdin: input_request -> UI event; input_reply queued back from the UI
+    let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<JupyterMessage>();
+    let (mut stdin_send, mut stdin_recv) = stdin.split();
+    let input_tx = tx.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                msg = stdin_recv.read() => {
+                    let Ok(msg) = msg else { break };
+                    if let JupyterMessageContent::InputRequest(x) = &msg.content {
+                        let (prompt, password) = (x.prompt.clone(), x.password);
+                        if input_tx
+                            .send(Event::Input { request: Box::new(msg), prompt, password })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+                reply = stdin_rx.recv() => match reply {
+                    Some(msg) => {
+                        if stdin_send.send(msg).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
+                },
+            }
+        }
+    });
+    stdin_tx
+}
+
+fn pump_control(
+    control: jupyter_zmq_client::ClientControlConnection,
+) -> mpsc::UnboundedSender<JupyterMessage> {
+    // control: sender task (replies are not interesting yet; the recv half
+    // must stay alive or the socket closes, so the task holds both)
+    let (control_tx, mut control_rx) = mpsc::unbounded_channel::<JupyterMessage>();
+    let (mut control_send, control_recv) = control.split();
+    tokio::spawn(async move {
+        let _keep_alive = control_recv;
+        while let Some(msg) = control_rx.recv().await {
+            if control_send.send(msg).await.is_err() {
+                break;
+            }
+        }
+    });
+    control_tx
+}
+
 impl Kernel {
     /// Resolve + launch a kernel and wire all channels. Run in the background;
     /// reports back as `Event::Ready` / `NotFound` / `LaunchFailed` on `tx`.
@@ -201,59 +508,9 @@ impl Kernel {
             .await
             .with_context(|| format!("writing {}", connection_file.display()))?;
 
-        let mut cmd = spec
-            .command(&connection_file, Some(std::process::Stdio::piped()), None)
-            .map_err(|e| anyhow!("kernel argv: {e}"))?;
-        cmd.current_dir(notebook_dir);
-        // Orphan protection for exits that skip Drop (signals, panics, the
-        // runtime tearing down the monitor task): ipykernel's parent poller
-        // exits once its parent is gone — what jupyter_client sets too.
-        cmd.env("JPY_PARENT_PID", std::process::id().to_string());
-        cmd.kill_on_drop(true);
-        let mut child = cmd.spawn().context("spawning kernel process")?;
-        let pid = child.id();
-        log::info!("kernel spawned, pid {pid:?}, connection file {}", connection_file.display());
+        let (pid, kill_tx) = spawn_process(spec, &connection_file, notebook_dir, &tx)?;
 
-        // Keep the last stderr line: it's the diagnosis when the kernel dies
-        // (and the pipe must be drained anyway or the kernel could block).
-        let last_stderr = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-        if let Some(stderr) = child.stderr.take() {
-            let last = last_stderr.clone();
-            tokio::spawn(async move {
-                use tokio::io::AsyncBufReadExt;
-                let mut lines = tokio::io::BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if !line.trim().is_empty() {
-                        log::debug!("kernel stderr: {line}");
-                        *last.lock().unwrap() = line;
-                    }
-                }
-            });
-        }
-
-        // Monitor: report unexpected exit; kill on demand (Kernel::drop).
-        let (kill_tx, mut kill_rx) = tokio::sync::oneshot::channel::<()>();
-        let monitor_tx = tx.clone();
-        tokio::spawn(async move {
-            let status = tokio::select! {
-                status = child.wait() => Some(status),
-                _ = &mut kill_rx => None,
-            };
-            match status {
-                Some(status) => {
-                    let code = status.map_or_else(|e| e.to_string(), |s| s.to_string());
-                    let stderr = last_stderr.lock().unwrap().clone();
-                    log::warn!("kernel died ({code}): {stderr}");
-                    let _ = monitor_tx.send(Event::Dead(format!("kernel died ({code}): {stderr}")));
-                }
-                None => {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
-                }
-            }
-        });
-
-        let mut iopub = jupyter_zmq_client::create_client_iopub_connection(&info, "", &session)
+        let iopub = jupyter_zmq_client::create_client_iopub_connection(&info, "", &session)
             .await
             .map_err(|e| anyhow!("iopub connect: {e}"))?;
         let identity =
@@ -275,226 +532,10 @@ impl Kernel {
             .await
             .map_err(|e| anyhow!("control connect: {e}"))?;
 
-        // iopub pump: kernel outputs/status -> UI events
-        let iopub_tx = tx.clone();
-        let iopub_pump = tokio::spawn(async move {
-            loop {
-                match iopub.read().await {
-                    Ok(msg) => {
-                        if let Some(ev) = translate_iopub(msg)
-                            && iopub_tx.send(ev).is_err()
-                        {
-                            break; // UI gone
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("iopub read failed: {e}");
-                        let _ = iopub_tx.send(Event::Info(format!("kernel connection lost: {e}")));
-                        break;
-                    }
-                }
-            }
-        });
-
-        // shell: sender task + reply pump. One request in flight at a time:
-        // ipykernel 7.0-7.3 can strand a request that arrives while it sends a
-        // reply (edge-triggered ZMQ_FD, ipython/ipykernel#1529, fixed in 7.4),
-        // leaving the kernel idle with our request unread. Kept although 7.4
-        // is out: projects pin older ipykernels, and kernel_info reports
-        // IPython's version, not ipykernel's, so a fixed kernel can't be told
-        // apart. The kernel runs shell requests one by one anyway, so waiting
-        // for each reply costs nothing.
-        let (mut shell_send, mut shell_recv) = shell.split();
-        let (shell_tx, mut shell_rx) = mpsc::unbounded_channel::<JupyterMessage>();
-        // (parent, the reply was a failed execute); no parent: a reply that
-        // couldn't be decoded, which can only be the in-flight request's
-        let (replied_tx, mut replied_rx) = mpsc::unbounded_channel::<(Option<String>, bool)>();
-        let abort_tx = tx.clone();
-        tokio::spawn(async move {
-            let mut kept = std::collections::VecDeque::new();
-            // request types this kernel has left unanswered (evcxr: inspect),
-            // with the request given up on: not sent again, or each would
-            // hold up the runs behind it. A reply that comes after all (Julia
-            // compiles its first inspect for longer than the wait) lifts that.
-            let mut unanswered: Vec<(String, String)> = Vec::new();
-            loop {
-                let msg = match kept.pop_front() {
-                    Some(msg) => msg,
-                    None => match shell_rx.recv().await {
-                        Some(msg) => msg,
-                        None => break,
-                    },
-                };
-                let id = msg.header.msg_id.clone();
-                let kind = msg.header.msg_type.clone();
-                let stops = stops_on_error(&msg);
-                // a run takes as long as it takes, and every kernel answers
-                // kernel_info, if only once it is up
-                let patient = matches!(
-                    msg.content,
-                    JupyterMessageContent::ExecuteRequest(_)
-                        | JupyterMessageContent::KernelInfoRequest(_)
-                );
-                while let Ok((late, _)) = replied_rx.try_recv() {
-                    unanswered.retain(|(_, given_up)| Some(given_up) != late.as_ref());
-                }
-                if unanswered.iter().any(|(k, _)| *k == kind) {
-                    let _ = abort_tx.send(no_reply(&kind, id));
-                    continue;
-                }
-                if shell_send.send(msg).await.is_err() {
-                    break;
-                }
-                let reply = async {
-                    loop {
-                        match replied_rx.recv().await {
-                            Some((Some(parent), failed)) if parent == id => break Some(failed),
-                            Some((None, _)) => {
-                                let _ = abort_tx.send(no_reply(&kind, id.clone()));
-                                break Some(true);
-                            }
-                            // a late reply to a request given up on
-                            Some((late, _)) => {
-                                unanswered.retain(|(_, given_up)| Some(given_up) != late.as_ref())
-                            }
-                            None => break None,
-                        }
-                    }
-                };
-                // anything else is answered promptly or (by some kernels) never
-                let reply = if patient {
-                    reply.await
-                } else {
-                    match tokio::time::timeout(REPLY_WAIT, reply).await {
-                        Ok(reply) => reply,
-                        Err(_) => {
-                            log::warn!(
-                                "no reply to {kind} in {REPLY_WAIT:?}: not asking again until it comes"
-                            );
-                            let _ = abort_tx.send(no_reply(&kind, id.clone()));
-                            unanswered.push((kind, id));
-                            Some(false)
-                        }
-                    }
-                };
-                let Some(failed) = reply else {
-                    return; // reply pump gone: connection lost
-                };
-                // stop_on_error: the kernel only aborts runs it has queued,
-                // which is none now, so skip the ones queued here instead,
-                // ending each as an aborted run ends (reply, then idle)
-                if stops && failed {
-                    while let Ok(next) = shell_rx.try_recv() {
-                        if stops_on_error(&next) {
-                            let parent = next.header.msg_id;
-                            let _ = abort_tx.send(Event::Done { parent: parent.clone() });
-                            let _ = abort_tx.send(Event::Status { parent, busy: false });
-                        } else {
-                            kept.push_back(next);
-                        }
-                    }
-                }
-            }
-        });
-        let reply_tx = tx.clone();
-        let reply_pump = tokio::spawn(async move {
-            use jupyter_zmq_client::RuntimeError;
-            loop {
-                let msg = match shell_recv.read().await {
-                    Ok(msg) => msg,
-                    Err(e @ (RuntimeError::ZmqError(_) | RuntimeError::IoError(_))) => {
-                        log::warn!("shell read failed: {e}");
-                        let _ = reply_tx.send(Event::Info(format!("kernel connection lost: {e}")));
-                        break;
-                    }
-                    // a reply this client can't decode (IRkernel answers an
-                    // interrupted run with status "abort"): the request is
-                    // over all the same
-                    Err(e) => {
-                        log::warn!("undecodable shell reply: {e}");
-                        let _ = replied_tx.send((None, true));
-                        continue;
-                    }
-                };
-                let parent = parent_id(&msg);
-                let failed = matches!(
-                    &msg.content,
-                    JupyterMessageContent::ExecuteReply(x) if x.status != ReplyStatus::Ok
-                );
-                let _ = replied_tx.send((Some(parent.clone()), failed)); // next request may go
-                let event = match msg.content {
-                    JupyterMessageContent::ExecuteReply(_) => Event::Done { parent },
-                    JupyterMessageContent::CompleteReply(x) => Event::Complete {
-                        parent,
-                        types: completion_types(&x.metadata),
-                        matches: x.matches,
-                        start: x.cursor_start,
-                    },
-                    JupyterMessageContent::InspectReply(x) => Event::Inspect {
-                        parent,
-                        text: x
-                            .found
-                            .then(|| serde_json::to_value(&x.data).ok())
-                            .flatten()
-                            .and_then(|d| d.get("text/plain")?.as_str().map(plain)),
-                    },
-                    JupyterMessageContent::KernelInfoReply(x) => {
-                        match serde_json::to_value(&x.language_info) {
-                            Ok(info) => Event::LanguageInfo(info),
-                            Err(_) => continue,
-                        }
-                    }
-                    _ => continue,
-                };
-                if reply_tx.send(event).is_err() {
-                    break;
-                }
-            }
-        });
-
-        // stdin: input_request -> UI event; input_reply queued back from the UI
-        let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<JupyterMessage>();
-        let (mut stdin_send, mut stdin_recv) = stdin.split();
-        let input_tx = tx.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    msg = stdin_recv.read() => {
-                        let Ok(msg) = msg else { break };
-                        if let JupyterMessageContent::InputRequest(x) = &msg.content {
-                            let (prompt, password) = (x.prompt.clone(), x.password);
-                            if input_tx
-                                .send(Event::Input { request: Box::new(msg), prompt, password })
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    }
-                    reply = stdin_rx.recv() => match reply {
-                        Some(msg) => {
-                            if stdin_send.send(msg).await.is_err() {
-                                break;
-                            }
-                        }
-                        None => break,
-                    },
-                }
-            }
-        });
-
-        // control: sender task (replies are not interesting yet; the recv half
-        // must stay alive or the socket closes, so the task holds both)
-        let (control_tx, mut control_rx) = mpsc::unbounded_channel::<JupyterMessage>();
-        let (mut control_send, control_recv) = control.split();
-        tokio::spawn(async move {
-            let _keep_alive = control_recv;
-            while let Some(msg) = control_rx.recv().await {
-                if control_send.send(msg).await.is_err() {
-                    break;
-                }
-            }
-        });
+        let iopub_pump = pump_iopub(iopub, &tx);
+        let (shell_tx, reply_pump) = pump_shell(shell, &tx);
+        let stdin_tx = pump_stdin(stdin, &tx);
+        let control_tx = pump_control(control);
 
         // what language this is, for the notebook's metadata
         let _ =
@@ -514,7 +555,7 @@ impl Kernel {
             kill_tx: Some(kill_tx),
             interrupt_via_message,
             connection_file,
-            pumps: [iopub_pump.abort_handle(), reply_pump.abort_handle()],
+            pumps: [iopub_pump, reply_pump],
         })
     }
 
